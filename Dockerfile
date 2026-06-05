@@ -55,9 +55,11 @@ COPY --from=frontend-builder --chown=cortex:cortex /app/out /app/frontend/out
 
 # Make entrypoint script executable and create backup of initial mock data
 RUN chmod +x /app/scripts/entrypoint.sh \
+    && mkdir -p /app/data \
     && cp -r /app/data /app/data_backup \
     && mkdir -p /tmp/cortex_uploads \
     && chown -R cortex:cortex /app /tmp/cortex_uploads
+
 
 ENTRYPOINT ["/app/scripts/entrypoint.sh"]
 
