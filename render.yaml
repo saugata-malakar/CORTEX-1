@@ -1,0 +1,26 @@
+databases:
+  - name: cortex-db
+    plan: free
+
+services:
+  - type: web
+    name: cortex-platform
+    env: docker
+    plan: free
+    region: oregon
+    envVars:
+      - key: RENDER
+        value: "true"
+      - key: PORT
+        value: "8000"
+      - key: CORTEX_DB_URL
+        fromDatabase:
+          name: cortex-db
+          property: connectionString
+      - key: DATABASE_URL
+        fromDatabase:
+          name: cortex-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+

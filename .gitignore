@@ -1,0 +1,79 @@
+# ============================================================
+# Cortex Drone Image Processing Pipeline — .gitignore
+# ============================================================
+
+# === Python bytecode ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# === Virtual environments ===
+.env
+venv/
+.venv/
+env/
+ENV/
+
+# === Distribution / packaging ===
+*.egg-info/
+*.egg
+dist/
+build/
+sdist/
+
+# === Testing ===
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# === Jupyter ===
+notebooks/.ipynb_checkpoints/
+
+# === Data artifacts (large / generated) ===
+data/raw/
+data/enhanced/
+data/mosaics/
+data/masks/
+data/patches/
+data/reports/
+
+# === Model artifacts ===
+models/*.pkl
+models/*.pth
+models/*.pt
+models/*.onnx
+
+# === Logs ===
+*.log
+logs/
+
+# === OS junk ===
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === IDE / editor ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ============================================================
+# KEEP tracked (do NOT ignore)
+# ============================================================
+# config/          — pipeline configuration YAML
+# src/             — all source code
+# tests/           — all test code
+# notebooks/       — Jupyter notebooks (not checkpoints)
+
+# === Local environment directories ===
+git_env/
+node_env/
+node.zip
+git.zip
+scratch/
+*.zip
+

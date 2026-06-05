@@ -1,0 +1,190 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cortex.construction/schemas/cortex_api_schema.json",
+  "title": "Cortex Detection Model — API I/O Contract",
+  "description": "Defines the request (input) and response (output) schema for the Cortex defect-detection model. All consumers and producers of detection results MUST conform to this contract.",
+  "definitions": {
+    "defect_type_enum": {
+      "type": "string",
+      "enum": [
+        "crack",
+        "spalling",
+        "corrosion",
+        "water_seepage",
+        "efflorescence",
+        "plaster_detachment",
+        "structural_displacement"
+      ],
+      "description": "Enumeration of recognised structural-defect categories."
+    },
+
+    "bounding_box": {
+      "type": "object",
+      "description": "Axis-aligned bounding box in pixel coordinates, anchored at the top-left corner of the image.",
+      "properties": {
+        "x": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Horizontal offset (px) of the top-left corner from the image origin."
+        },
+        "y": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Vertical offset (px) of the top-left corner from the image origin."
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Width (px) of the bounding box."
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Height (px) of the bounding box."
+        }
+      },
+      "required": ["x", "y", "width", "height"],
+      "additionalProperties": false
+    },
+
+    "detection": {
+      "type": "object",
+      "description": "A single defect detection produced by the model.",
+      "properties": {
+        "defect_id": {
+          "type": "string",
+          "description": "Globally unique identifier for this detection instance (UUID v4 recommended).",
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "defect_type": {
+          "$ref": "#/definitions/defect_type_enum"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Model confidence score for this detection (0 = no confidence, 1 = maximum confidence)."
+        },
+        "bbox": {
+          "$ref": "#/definitions/bounding_box"
+        },
+        "mask": {
+          "type": ["string", "null"],
+          "description": "Optional segmentation mask. Either a base64-encoded binary mask (PNG) or an RLE-encoded mask string. Null when instance segmentation is not available.",
+          "default": null
+        },
+        "mask_encoding": {
+          "type": "string",
+          "enum": ["base64_png", "rle", "none"],
+          "default": "none",
+          "description": "Encoding format of the 'mask' field. 'base64_png' for base64-encoded PNG binary mask, 'rle' for run-length encoded mask, 'none' when no mask is provided."
+        },
+        "mask_shape": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Shape of the decoded mask as [height, width] in pixels. Required when 'mask' is not null.",
+          "default": null
+        }
+      },
+      "required": ["defect_id", "defect_type", "confidence", "bbox"],
+      "additionalProperties": false
+    },
+
+    "config_overrides": {
+      "type": "object",
+      "description": "Optional runtime overrides for pipeline parameters. Keys must match top-level sections in pipeline_config.yaml. Only the specified keys are overridden; all others retain their default values.",
+      "additionalProperties": true
+    },
+
+    "request": {
+      "type": "object",
+      "description": "Input payload sent to the Cortex detection model.",
+      "properties": {
+        "image_path": {
+          "type": "string",
+          "description": "Absolute or relative filesystem path to the input image. At least one of 'image_path' or 'image_array' must be provided.",
+          "examples": ["/data/flights/2026-06-01/DJI_0042.JPG"]
+        },
+        "image_array": {
+          "type": ["array", "null"],
+          "description": "Optional. The image as a nested numerical array (HxWxC, uint8). Useful for in-memory pipelines that skip disk I/O. When both 'image_path' and 'image_array' are provided, 'image_array' takes precedence.",
+          "default": null
+        },
+        "config_overrides": {
+          "$ref": "#/definitions/config_overrides"
+        }
+      },
+      "anyOf": [
+        { "required": ["image_path"] },
+        { "required": ["image_array"] }
+      ],
+      "additionalProperties": false
+    },
+
+    "response": {
+      "type": "object",
+      "description": "Output payload returned by the Cortex detection model.",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["success", "error"],
+          "description": "Overall status of the inference call."
+        },
+        "image_path": {
+          "type": ["string", "null"],
+          "description": "Echo of the input image path (null if image_array was used)."
+        },
+        "image_width_px": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Width of the processed image in pixels."
+        },
+        "image_height_px": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Height of the processed image in pixels."
+        },
+        "model_version": {
+          "type": "string",
+          "description": "Semantic version of the detection model that produced these results.",
+          "examples": ["1.4.0"]
+        },
+        "inference_time_ms": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Wall-clock inference time in milliseconds."
+        },
+        "detections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/detection"
+          },
+          "description": "List of defect detections. Empty array when no defects are found."
+        },
+        "error_message": {
+          "type": ["string", "null"],
+          "description": "Human-readable error description when status is 'error'. Null on success.",
+          "default": null
+        }
+      },
+      "required": ["status", "detections"],
+      "additionalProperties": false
+    }
+  },
+
+  "oneOf": [
+    {
+      "$ref": "#/definitions/request",
+      "title": "DetectionRequest"
+    },
+    {
+      "$ref": "#/definitions/response",
+      "title": "DetectionResponse"
+    }
+  ]
+}

@@ -1,0 +1,497 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cortex.construction/schemas/json_output_schema.json",
+  "title": "Cortex Inspection Output — Hierarchical Building Report",
+  "description": "Schema for the structured JSON output produced by the Cortex pipeline.  The hierarchy is: Building → Facade → Zone (grid cell) → Defect Instance.  Each level aggregates vulnerability-index data upward.",
+
+  "definitions": {
+
+    "gps_coordinate": {
+      "type": "object",
+      "description": "WGS-84 geographic coordinate.",
+      "properties": {
+        "lat": {
+          "type": "number",
+          "minimum": -90.0,
+          "maximum": 90.0,
+          "description": "Latitude in decimal degrees (positive = North)."
+        },
+        "lon": {
+          "type": "number",
+          "minimum": -180.0,
+          "maximum": 180.0,
+          "description": "Longitude in decimal degrees (positive = East)."
+        }
+      },
+      "required": ["lat", "lon"],
+      "additionalProperties": false
+    },
+
+    "pixel_coordinate": {
+      "type": "object",
+      "description": "Pixel coordinate in the stitched mosaic image.",
+      "properties": {
+        "x": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Horizontal pixel offset from the top-left origin."
+        },
+        "y": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Vertical pixel offset from the top-left origin."
+        }
+      },
+      "required": ["x", "y"],
+      "additionalProperties": false
+    },
+
+    "severity_class_enum": {
+      "type": "string",
+      "enum": ["hairline", "fine", "medium", "wide"],
+      "description": "Crack / defect width severity classification. hairline: <0.2 mm, fine: 0.2–1 mm, medium: 1–5 mm, wide: >5 mm."
+    },
+
+    "vi_class_enum": {
+      "type": "string",
+      "enum": ["minor", "moderate", "significant", "severe", "critical"],
+      "description": "Vulnerability-index classification band (IS 13311 aligned). minor: 0–20, moderate: 21–40, significant: 41–60, severe: 61–80, critical: 81–100."
+    },
+
+    "defect_type_enum": {
+      "type": "string",
+      "enum": [
+        "crack",
+        "spalling",
+        "corrosion",
+        "water_seepage",
+        "efflorescence",
+        "plaster_detachment",
+        "structural_displacement",
+        "stain",
+        "flexural_crack",
+        "shear_crack",
+        "settlement_crack",
+        "shrinkage_crack",
+        "compression_crack",
+        "corrosion_crack",
+        "fatigue_crack"
+      ],
+      "description": "Enumeration of recognised structural-defect categories."
+    },
+
+    "orientation_enum": {
+      "type": "string",
+      "enum": ["N", "S", "E", "W", "NE", "NW", "SE", "SW"],
+      "description": "Cardinal or intercardinal compass orientation of the façade."
+    },
+
+    "enhancement_params": {
+      "type": "object",
+      "description": "Record of the enhancement parameters actually applied to this façade's images during processing.",
+      "properties": {
+        "clahe_clip_limit": {
+          "type": "number",
+          "description": "CLAHE clip limit used."
+        },
+        "clahe_tile_size": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "CLAHE tile grid size [columns, rows]."
+        },
+        "gaussian_kernel_size": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Gaussian blur kernel [width, height]."
+        },
+        "gaussian_sigma": {
+          "type": "number",
+          "description": "Gaussian blur sigma."
+        }
+      },
+      "additionalProperties": true
+    },
+
+    "defect_instance": {
+      "type": "object",
+      "description": "A single defect detection with metric measurements, geolocation, and classification metadata.",
+      "properties": {
+        "defect_id": {
+          "type": "string",
+          "description": "Globally unique identifier (UUID v4) for this defect instance.",
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "type": {
+          "$ref": "#/definitions/defect_type_enum"
+        },
+        "length_cm": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Maximum skeleton length of the defect in centimetres. Null for non-linear defects where length is not meaningful."
+        },
+        "width_mm": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Mean perpendicular width of the defect in millimetres. Null when width measurement is not applicable."
+        },
+        "area_cm2": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Total defect area in square centimetres."
+        },
+        "centroid_gps": {
+          "$ref": "#/definitions/gps_coordinate",
+          "description": "GPS coordinate of the defect centroid, projected from the mosaic via geo-referencing."
+        },
+        "centroid_px": {
+          "$ref": "#/definitions/pixel_coordinate",
+          "description": "Pixel coordinate of the defect centroid in the stitched mosaic."
+        },
+        "severity_class": {
+          "$ref": "#/definitions/severity_class_enum",
+          "description": "Width-based severity classification of this defect."
+        },
+        "vi_contribution": {
+          "type": "number",
+          "minimum": 0,
+          "description": "This defect's additive contribution to the parent zone's vulnerability index."
+        },
+        "confidence_score": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Model confidence score for this detection."
+        },
+        "image_crop_path": {
+          "type": ["string", "null"],
+          "description": "Relative path to the cropped image patch of this defect, saved for visual review and reporting. Null if not saved.",
+          "default": null
+        },
+        "is_false_positive": {
+          "type": "boolean",
+          "description": "True if the false-positive filter classified this detection as a false positive.",
+          "default": false
+        },
+        "fp_confidence": {
+          "type": ["number", "null"],
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Confidence of the false-positive classifier's verdict. Null if FP filtering was not applied.",
+          "default": null
+        },
+        "temporal_status": {
+          "type": "string",
+          "enum": ["new", "propagated", "resolved", "uncertain"],
+          "description": "Temporal tracking status compared to previous cycles.",
+          "default": "new"
+        },
+        "parent_defect_id": {
+          "type": ["string", "null"],
+          "description": "The matching defect ID from the previous cycle, if propagated.",
+          "default": null
+        },
+        "delta_length_cm": {
+          "type": ["number", "null"],
+          "description": "Change in length compared to previous cycle in cm.",
+          "default": 0.0
+        },
+        "delta_width_mm": {
+          "type": ["number", "null"],
+          "description": "Change in width compared to previous cycle in mm.",
+          "default": 0.0
+        },
+        "delta_area_cm2": {
+          "type": ["number", "null"],
+          "description": "Change in area compared to previous cycle in cm2.",
+          "default": 0.0
+        },
+        "growth_rate_mm_per_month": {
+          "type": ["number", "null"],
+          "description": "Growth rate in mm per month.",
+          "default": 0.0
+        },
+        "visible_bar_diameter_mm": {
+          "type": ["number", "null"],
+          "description": "Measured or estimated visible diameter of reinforcement bar in millimetres."
+        },
+        "estimated_cover_loss_mm": {
+          "type": ["number", "null"],
+          "description": "Calculated loss of concrete cover depth in millimetres."
+        },
+        "capacity_reduction_pct": {
+          "type": ["number", "null"],
+          "description": "Estimated remaining structural capacity reduction as a percentage."
+        },
+        "orientation_angle": {
+          "type": ["number", "null"],
+          "description": "Orientation angle of the crack centerline in degrees from vertical."
+        },
+        "propagation_rate": {
+          "type": ["string", "null"],
+          "enum": ["dormant", "active", "aggressive", null],
+          "description": "Activity status classification of the crack growth."
+        },
+        "delamination_area_m2": {
+          "type": ["number", "null"],
+          "description": "Calculated area of concrete surface delamination/spalling in square metres."
+        },
+        "grid_reference": {
+          "type": ["string", "null"],
+          "description": "Elevation grid reference overlay location (e.g. B4, D2)."
+        },
+        "member_type": {
+          "type": ["string", "null"],
+          "description": "Structural member classification (column, beam, slab, wall)."
+        },
+        "recommended_intervention": {
+          "type": ["string", "null"],
+          "description": "Recommended remedial action method based on engineering standards."
+        },
+        "reinspection_date": {
+          "type": ["string", "null"],
+          "description": "Suggested timeline reinspection date for monitoring."
+        }
+      },
+      "required": [
+        "defect_id",
+        "type",
+        "area_cm2",
+        "centroid_gps",
+        "centroid_px",
+        "severity_class",
+        "vi_contribution",
+        "confidence_score",
+        "is_false_positive"
+      ],
+      "additionalProperties": false
+    },
+
+    "zone": {
+      "type": "object",
+      "description": "A single grid cell (zone) within a façade. The grid layout is defined by 'facade_grid' in pipeline_config.yaml (e.g. 4×4 → zones A1 through D4).",
+      "properties": {
+        "grid_id": {
+          "type": "string",
+          "description": "Zone identifier in the format <row_letter><column_number>, e.g. 'A1', 'B3', 'D4'.",
+          "pattern": "^[A-Z][0-9]+$"
+        },
+        "zone_area_cm2": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Physical area of this zone in square centimetres."
+        },
+        "zone_vi": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Aggregated vulnerability index for this zone (0–100 scale)."
+        },
+        "defect_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total number of defect instances detected in this zone."
+        },
+        "dominant_defect_type": {
+          "oneOf": [
+            { "$ref": "#/definitions/defect_type_enum" },
+            { "type": "null" }
+          ],
+          "description": "The defect type with the highest cumulative VI contribution in this zone. Null if no defects are present."
+        },
+        "defects": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/defect_instance"
+          },
+          "description": "List of individual defect instances within this zone."
+        }
+      },
+      "required": [
+        "grid_id",
+        "zone_area_cm2",
+        "zone_vi",
+        "defect_count",
+        "dominant_defect_type",
+        "defects"
+      ],
+      "additionalProperties": false
+    },
+
+    "facade": {
+      "type": "object",
+      "description": "A single building façade, represented by a stitched mosaic image divided into a grid of zones.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for this façade within the building."
+        },
+        "orientation": {
+          "$ref": "#/definitions/orientation_enum",
+          "description": "Compass orientation of this façade."
+        },
+        "area_m2": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Total façade area in square metres."
+        },
+        "vi_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Aggregated vulnerability index for the entire façade (0–100 scale)."
+        },
+        "vi_class": {
+          "$ref": "#/definitions/vi_class_enum",
+          "description": "IS 13311–aligned vulnerability classification for this façade."
+        },
+        "mosaic_path": {
+          "type": "string",
+          "description": "Relative path to the stitched mosaic image file for this façade."
+        },
+        "enhancement_params": {
+          "$ref": "#/definitions/enhancement_params",
+          "description": "Enhancement parameters applied during processing of this façade."
+        },
+        "zones": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/zone"
+          },
+          "description": "Grid zones (e.g. A1–D4) that partition this façade."
+        }
+      },
+      "required": [
+        "id",
+        "orientation",
+        "area_m2",
+        "vi_score",
+        "vi_class",
+        "mosaic_path",
+        "enhancement_params",
+        "zones"
+      ],
+      "additionalProperties": false
+    },
+
+    "building": {
+      "type": "object",
+      "description": "Top-level entity representing a single building inspection.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique building identifier (project-assigned)."
+        },
+        "name": {
+          "type": "string",
+          "description": "Human-readable building name or label."
+        },
+        "address": {
+          "type": "string",
+          "description": "Postal address of the building."
+        },
+        "gps_centroid": {
+          "$ref": "#/definitions/gps_coordinate",
+          "description": "GPS centroid of the building footprint."
+        },
+        "inspection_date": {
+          "type": "string",
+          "format": "date",
+          "description": "Date on which the drone inspection was conducted (ISO 8601: YYYY-MM-DD)."
+        },
+        "inspector_module_version": {
+          "type": "string",
+          "description": "Semantic version of the Cortex inspector module used.",
+          "examples": ["2.1.0"]
+        },
+        "cycle_number": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Inspection cycle number (1 = baseline, 2+ = follow-up)."
+        },
+        "facades": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/facade"
+          },
+          "description": "List of inspected façades for this building."
+        },
+        "temporal_comparison": {
+          "type": "object",
+          "properties": {
+            "comparison_cycle": {
+              "type": "integer",
+              "description": "The past cycle number being compared to."
+            },
+            "delta_vi": {
+              "type": "number",
+              "description": "Change in Vulnerability Index score between cycles."
+            },
+            "new_defects_count": {
+              "type": "integer",
+              "description": "Number of newly detected defects in current cycle."
+            },
+            "propagated_defects_count": {
+              "type": "integer",
+              "description": "Number of defects tracked from previous cycle."
+            }
+          },
+          "required": [
+            "comparison_cycle",
+            "delta_vi",
+            "new_defects_count",
+            "propagated_defects_count"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "address",
+        "gps_centroid",
+        "inspection_date",
+        "inspector_module_version",
+        "cycle_number",
+        "facades"
+      ],
+      "additionalProperties": false
+    }
+  },
+
+  "type": "object",
+  "description": "Root object of the Cortex pipeline JSON output. Contains metadata and a list of inspected buildings.",
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Version of this output schema for forwards-compatibility checks.",
+      "const": "1.0.0"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of when this output was generated."
+    },
+    "pipeline_config_hash": {
+      "type": "string",
+      "description": "SHA-256 hash of the pipeline_config.yaml file used, for reproducibility."
+    },
+    "buildings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/building"
+      },
+      "description": "List of inspected buildings in this output."
+    }
+  },
+  "required": [
+    "schema_version",
+    "generated_at",
+    "pipeline_config_hash",
+    "buildings"
+  ],
+  "additionalProperties": false
+}

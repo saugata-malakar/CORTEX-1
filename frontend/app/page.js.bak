@@ -1,0 +1,81 @@
+"use client";
+
+import { useEffect, useState, useRef, useMemo } from "react";
+import dynamic from "next/dynamic";
+import Sidebar from "../components/Sidebar";
+
+// Dynamic import for Leaflet map component to prevent Next.js SSR crashes
+const FacadeMap = dynamic(() => import("../components/FacadeMap"), { ssr: false });
+
+const ROW_HEIGHT = 42;
+
+const getApiUrl = (path) => {
+  if (typeof window !== "undefined" && window.location.port === "3000") {
+    return `http://localhost:8000${path}`;
+  }
+  return path;
+};
+
+export default function Dashboard() {
+  // --- 1. Master Application State ---
+  const [inspectionsList, setInspectionsList] = useState([]);
+  const [activeInspectionId, setActiveInspectionId] = useState(null);
+  const [rawDefects, setRawDefects] = useState([]);
+  
+  // Filter & Sorting settings
+  const [activeFilters, setActiveFilters] = useState(new Set(["crack", "spalling", "other"]));
+  const [confidenceGate, setConfidenceGate] = useState(0.0);
+  const [suppressFPs, setSuppressFPs] = useState(true);
+  const [activeCycle, setActiveCycle] = useState(2);
+  const [zoneHighlight, setZoneHighlight] = useState(new Set());
+  const [typePillFilter, setTypePillFilter] = useState("all");
+  const [sortBy, setSortBy] = useState("id");
+
+  // Selection states
+  const [selectedDefectId, setSelectedDefectId] = useState(null);
+
+  // Warning banner state
+  const [warnings, setWarnings] = useState([]);
+  const [warningBannerOpen, se
+                      <div className="col col-type">{defect.type}</div>
+                      <div className="col col-severity">
+                        <span className={`severity-pill sev-${defect.severity_class}`}>
+                          {defect.severity_class}
+                        </span>
+                      </div>
+                      <div className="col col-len">{(defect.length_cm || 0).toFixed(1)} cm</div>
+                      <div className="col col-width">{(defect.width_mm || 0).toFixed(1)} mm</div>
+                      <div className="col col-area">{(defect.area_cm2 || 0).toFixed(0)} cm²</div>
+                      <div className="col col-conf">{((defect.confidence_score || 0) * 100).toFixed(0)}%</div>
+                      <div className={`col col-fp ${fpClass}`}>{fpProb}%</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </footer>
+      </main>
+
+      {/* Pipeline execution progress modal */}
+      {progressModalOpen && (
+        <div id="progress-modal" className="modal-overlay">
+          <div className="modal-content glass-card">
+            <h3>Pipeline Analysis Progress</h3>
+            <p id="progress-status">{progressStatus}</p>
+            <div className="progress-bar-container">
+              <div
+                id="progress-bar-fill"
+                className="progress-bar-fill"
+                style={{ width: `${progressPercent}%` }}
+              ></div>
+            </div>
+            <div id="progress-percent" className="progress-percent">
+              {progressPercent}%
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

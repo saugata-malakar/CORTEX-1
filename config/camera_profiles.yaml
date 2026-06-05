@@ -1,0 +1,116 @@
+# =============================================================================
+# Cortex — Drone Camera Sensor Profiles
+# =============================================================================
+# Each profile defines the physical sensor dimensions, true focal length,
+# and native image resolution for a specific drone camera.  These values
+# are used by the GSD (Ground Sample Distance) calculator:
+#
+#   GSD (cm/px) = (sensor_width_mm × altitude_m × 100)
+#                 / (focal_length_mm × image_width_px)
+#
+# IMPORTANT:
+#   • sensor_width_mm / sensor_height_mm — physical sensor size, NOT the
+#     field-of-view or crop factor.
+#   • focal_length_mm — actual optical focal length, NOT the 35 mm
+#     equivalent often quoted in marketing materials.
+#   • image_width_px / image_height_px — native (maximum) resolution
+#     in photo mode.
+#
+# To add a new camera, copy an existing profile block and fill in the
+# specs from the manufacturer's datasheet.
+#
+# Last updated: 2026-06-02
+# =============================================================================
+
+profiles:
+  # -------------------------------------------------------------------------
+  # DJI Phantom 4 Pro / Pro V2.0
+  # 1-inch CMOS (Sony Exmor R IMX183)
+  # -------------------------------------------------------------------------
+  dji_phantom_4_pro:
+    name: "DJI Phantom 4 Pro"
+    sensor_width_mm: 13.2
+    sensor_height_mm: 8.8
+    focal_length_mm: 8.8
+    image_width_px: 5472
+    image_height_px: 3648
+
+  # -------------------------------------------------------------------------
+  # DJI Mavic 3 (Hasselblad main camera)
+  # 4/3-inch CMOS
+  # -------------------------------------------------------------------------
+  dji_mavic_3:
+    name: "DJI Mavic 3"
+    sensor_width_mm: 17.3
+    sensor_height_mm: 13.0
+    focal_length_mm: 12.29
+    image_width_px: 5280
+    image_height_px: 3956
+
+  # -------------------------------------------------------------------------
+  # DJI Mavic 2 Pro (Hasselblad L1D-20c)
+  # 1-inch CMOS
+  # -------------------------------------------------------------------------
+  dji_mavic_2_pro:
+    name: "DJI Mavic 2 Pro"
+    sensor_width_mm: 13.2
+    sensor_height_mm: 8.8
+    focal_length_mm: 10.26
+    image_width_px: 5472
+    image_height_px: 3648
+
+  # -------------------------------------------------------------------------
+  # DJI Mini 3 Pro
+  # 1/1.3-inch CMOS
+  # -------------------------------------------------------------------------
+  dji_mini_3_pro:
+    name: "DJI Mini 3 Pro"
+    sensor_width_mm: 9.7
+    sensor_height_mm: 7.3
+    focal_length_mm: 6.72
+    image_width_px: 4032
+    image_height_px: 3024
+
+  # -------------------------------------------------------------------------
+  # DJI Air 2S
+  # 1-inch CMOS
+  # -------------------------------------------------------------------------
+  dji_air_2s:
+    name: "DJI Air 2S"
+    sensor_width_mm: 13.2
+    sensor_height_mm: 8.8
+    focal_length_mm: 8.4
+    image_width_px: 5472
+    image_height_px: 3648
+
+  # -------------------------------------------------------------------------
+  # Autel EVO II Pro (6K)
+  # 1-inch CMOS (Sony IMX383)
+  # -------------------------------------------------------------------------
+  autel_evo_ii_pro:
+    name: "Autel EVO II Pro"
+    sensor_width_mm: 13.2
+    sensor_height_mm: 8.8
+    focal_length_mm: 10.3
+    image_width_px: 5472
+    image_height_px: 3648
+
+  # -------------------------------------------------------------------------
+  # Custom / Unknown Camera
+  # Fill in these values manually when using a camera not listed above.
+  # All fields are required; leaving any as null will raise a validation
+  # error at pipeline startup.
+  # -------------------------------------------------------------------------
+  custom:
+    name: "Custom Camera"
+    sensor_width_mm: null
+    sensor_height_mm: null
+    focal_length_mm: null
+    image_width_px: null
+    image_height_px: null
+
+# ---------------------------------------------------------------------------
+# Default profile to use when no --camera-profile flag is supplied.
+# Must match one of the keys under 'profiles' above.
+# ---------------------------------------------------------------------------
+default_profile: "dji_phantom_4_pro"

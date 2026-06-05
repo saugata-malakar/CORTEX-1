@@ -1,0 +1,133 @@
+<USER_REQUEST>
+Implementation — All Changes in Plain Text Scripts
+
+Step 1 — src/rebar_detector.py (New File)
+Create this file from scratch in src/.
+pythonimport cv2
+import numpy as np
+from dataclasses import dataclass
+from typing import List, Optional
+
+IS_1786_STANDARD_DIAMETERS_MM = [8, 10, 12, 16, 20, 25, 32]
+MIN_COVER_BY_EXPOSURE = {
+    "mild":       20,
+    "moderate":   30,
+    "severe":     45,
+    "very_severe": 50,
+    "extreme":    75,
+}
+
+@dataclass
+class RebarResult:
+    grid_ref: str
+    estimated_diameter_mm: float
+    assumed_standard_diameter_mm: int
+    measured_spacing_mm: float
+    required_cover_mm: int
+    measured_cover_mm: float
+    cover_status: str          # "Adequate" or "Deficient"
+    bar_count_visible: int
+    confidence: float
+
+
+def detect_rebars(
+    mosaic_region: np.ndarray,
+    gsd_mm_per_px: float,
+    exposure_class: str = "moderate",
+    grid_ref: str = "UNKNOWN"
+) -> Optional[RebarResult]:
+    """
+    Detects rebar from an exposed spall or corrosion region.
+    mosaic_region: cropped numpy array of the exposed area (BGR)
+    gsd_mm_per_px: ground sampling distance from pipeline calibration
+    """
+    gray = cv2.cvtColor(mosaic_region, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blur, 50, 150, apertureSize=3)
+
+    # Hough line detection — finds parallel bar lines
+    lines = cv2.HoughLinesP(
+        edges,
+        rho=1,
+        theta=np.pi / 180,
+        threshold=40,
+        minLineLength=30,
+        maxLineGap=10
+    )
+
+    if lines is None or len(lines) < 2:
+        return None
+
+    # Filter to near-parallel lines (same dominant angle)
+    angles = []
+    for line in lines:
+        x1, y1, x2, y2 = line[0]
+        angle = np.degrees(np.arctan2(y2 - y1, x2 - x1)) % 180
+        angles.append(angle)
+
+    median_angle = np.median(angles)
+    parallel_lines = [
+        l for l, a in zip(lines, angles)
+        if abs(a - median_angle) < 15
+    ]
+
+    if len(parallel_lines) < 2:
+        return None
+
+    # Compute perpendicular dis
+<truncated 21986 bytes>
+f={mountRef}
+      style={{ width: "100%", height: "420px", borderRadius: "12px", overflow: "hidden" }}
+      aria-label="3D structural view"
+    />
+  );
+}
+Add to your page.js view toggle:
+javascript// In page.js state
+const [viewMode, setViewMode] = useState("2d"); // "2d" | "3d"
+
+// Toggle buttons
+<button onClick={() => setViewMode("2d")}>2D Map</button>
+<button onClick={() => setViewMode("3d")}>3D View</button>
+
+// Conditional render
+{viewMode === "2d" && <FacadeMap ... />}
+{viewMode === "3d" && (
+  <StructureViewer
+    defects={defects}
+    mosaicUrl="/api/mosaic"
+    onDefectClick={(id) => appState.publish("defectSelected", id)}
+  />
+)}
+
+Run Order After All Changes
+bash# 1. Verify rebar detector works standalone
+python -c "from src.rebar_detector import detect_rebars; print('OK')"
+
+# 2. Verify grid utils
+python -c "from src.grid_utils import assign_grid_ref; print(assign_grid_ref(500,300,2000,1500))"
+
+# 3. Run full test suite
+pytest tests/ -v --tb=short
+
+# 4. Run E2E to confirm rebar + grid ref appear in output JSON
+pytest tests/test_e2e.py -v -s
+
+# 5. Check rebar_analysis key exists in output
+python -c "
+import json
+data = json.load(open('data/reports/latest_output.json'))
+print('rebar_analysis:', data.get('rebar_analysis'))
+print('sample grid_ref:', data['defects'][0].get('grid_ref'))
+"
+
+# 6. Build frontend with 3D viewer
+cd frontend && npm install three && npm run build && cd ..
+
+# 7. Start server
+python run_frontend.py --port 8000
+Every change is additive — nothing breaks existing tests. The rebar detector only fires when triggered, the crack subtype is an extra field in the existing dict, and the 3D viewer is a new component that does not touch Leaflet or Chart.js.Sonnet 4.6 Low   IMAPLEMENT THES ECHANGES FIRSTA DD THE CODING FIELS ONE BY ONE IN THE DATSBE PROELY  ODNT TRY TO WRITE ANY MORE CODES JUST PLACTHEMA NDUSE THEMPORPELY AFETR THTA  ATRY TO MERG THEM ONTO THENTIRE CDE PART BY PART
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-06-04T15:33:48+05:30.
+</ADDITIONAL_METADATA>

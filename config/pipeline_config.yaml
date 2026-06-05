@@ -1,0 +1,385 @@
+# =============================================================================
+# Cortex Drone Image Processing Pipeline — Master Configuration
+# =============================================================================
+# This file contains every tuneable parameter organised by processing phase.
+# Override individual values at runtime via environment variables or CLI flags
+# following the pattern: CORTEX__<SECTION>__<KEY> (double-underscore delimiters).
+#
+# Last updated: 2026-06-02
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Phase 1 — Quality Gate
+# ---------------------------------------------------------------------------
+# Filters out images that are blurry, too dark, captured at anomalous
+# altitudes, or separated by suspiciously large temporal gaps.
+quality_gate:
+  # Minimum Laplacian variance (sharpness proxy). Images below this value
+  # are considered blurry and discarded.
+  laplacian_variance_min: 100
+
+  # Minimum mean pixel intensity (0-255). Images below this threshold are
+  # considered underexposed / too dark.
+  mean_intensity_min: 30
+
+  # Number of standard deviations from mean altitude to flag as anomalous.
+  # Uses the z-score method across all images in the flight.
+  altitude_anomaly_sigma: 2.0
+
+  # A frame-to-frame time gap exceeding (median_gap × this multiplier) is
+  # flagged as a temporal anomaly, indicating potential data loss.
+  temporal_gap_multiplier: 3.0
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Image Enhancement
+# ---------------------------------------------------------------------------
+# Contrast-limited adaptive histogram equalisation (CLAHE) followed by
+# Gaussian smoothing to improve texture visibility while reducing noise.
+enhancement:
+  # CLAHE clip limit — higher values increase contrast but may amplify noise.
+  clahe_clip_limit: 2.0
+
+  # CLAHE tile grid size [columns, rows]. Smaller tiles = more localised
+  # enhancement; larger tiles = more global.
+  clahe_tile_size: [8, 8]
+
+  # Gaussian blur kernel size [width, height] — must be odd integers.
+  gaussian_kernel_size: [5, 5]
+
+  # Gaussian blur standard deviation. 0 = auto-compute from kernel size.
+  gaussian_sigma: 1.0
+
+  # Post-enhancement sharpness re-check.  If enhancement accidentally
+  # softens the image below this threshold, the original is kept instead.
+  post_enhance_laplacian_min: 100
+
+# ---------------------------------------------------------------------------
+# Phase 3 — Perspective Correction
+# ---------------------------------------------------------------------------
+# Hough-line–based vanishing-point estimation and homography rectification
+# for oblique façade images.
+perspective_correction:
+  # ρ (rho) resolution of the Hough accumulator in pixels.
+  hough_rho: 1
+
+  # θ (theta) resolution of the Hough accumulator in degrees.
+  hough_theta_degrees: 1.0
+
+  # Hough accumulator threshold — minimum number of votes (intersections).
+  hough_threshold: 100
+
+  # Minimum line length (in pixels) to accept.
+  hough_min_line_length: 100
+
+  # Maximum allowed gap (in pixels) between segments on the same line.
+  hough_max_line_gap: 10
+
+  # Lines whose angles differ by less than this tolerance (degrees) are
+  # treated as parallel for vanishing-point grouping.
+  parallelism_tolerance_degrees: 0.5
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Image Stitching / Mosaic Assembly
+# ---------------------------------------------------------------------------
+# SIFT feature extraction, Lowe's ratio test, RANSAC homography estimation,
+# and tile-based blending to create a seamless façade mosaic.
+stitching:
+  # --- SIFT feature detector parameters ---
+  # 0 = unlimited (retain all features detected).
+  sift_n_features: 0
+
+  # Number of layers in each SIFT octave.  More layers = finer scale
+  # sampling but slower extraction.
+  sift_n_octave_layers: 3
+
+  # SIFT contrast threshold. Lower values detect more (and noisier) features.
+  sift_contrast_threshold: 0.04
+
+  # SIFT edge threshold. Higher values keep features closer to edges.
+  sift_edge_threshold: 10
+
+  # SIFT Gaussian sigma of the initial image smoothing.
+  sift_sigma: 1.6
+
+  # --- Feature matching ---
+  # Lowe's ratio test threshold. Matches whose distance-ratio exceeds this
+  # are discarded as ambiguous.
+  lowe_ratio_threshold: 0.75
+
+  # --- Homography estimation ---
+  # RANSAC re-projection error threshold in pixels.
+  ransac_reproj_threshold: 2.0
+
+  # Minimum number of inlier matches required to accept a pairwise
+  # homography as valid.
+  min_inlier_matches: 15
+
+  # Minimum estimated overlap (%) between adjacent frames to attempt
+  # matching.  Pairs below this are skipped.
+  min_overlap_percent: 30
+
+  # Use OpenCV's USAC_MAGSAC++ robust estimator instead of classic RANSAC.
+  # Provides better accuracy with marginal speed cost.
+  use_usac_magsac: true
+
+  # --- Tile-based blending ---
+  # Tile size (px) for multi-band blending. Powers of 2 are preferred.
+  tile_size: 1024
+
+  # Overlap (px) between adjacent tiles to avoid seam artefacts.
+  tile_overlap: 128
+
+  # Hard upper bound on mosaic width or height in pixels.
+  # Exceeding this triggers downsampling to prevent OOM.
+  max_mosaic_dimension: 50000
+
+  # OpenCV Stitcher mode:
+  #   "SCANS"    — suited to planar / nadir drone scans (affine model).
+  #   "PANORAMA" — for wide-angle or rotational captures (perspective model).
+  stitcher_mode: "SCANS"
+
+# ---------------------------------------------------------------------------
+# Phase 5 — Ground Sample Distance (GSD) Calculation
+# ---------------------------------------------------------------------------
+# Converts pixel measurements to real-world metric units using camera
+# intrinsics and flight altitude.
+gsd:
+  # Length (in metres) of a reference object visible in the scene, used for
+  # GSD cross-validation when available.
+  reference_object_length_m: 1.0
+
+  # Maximum acceptable deviation (%) between EXIF-based GSD and the
+  # reference-object–based GSD before raising a warning.
+  gsd_tolerance_percent: 5.0
+
+  # If true, use RelativeAltitude EXIF tag (height above takeoff) instead
+  # of AbsoluteAltitude (height above sea level) for GSD computation.
+  use_relative_altitude: true
+
+# ---------------------------------------------------------------------------
+# Phase 6 — Geo-Referencing
+# ---------------------------------------------------------------------------
+# Maps pixel coordinates to GPS (WGS-84) via thin-plate-spline or affine
+# transform fitted to EXIF GPS tags embedded in the source images.
+geo_reference:
+  # Target root-mean-square error (metres) for the GPS ↔ pixel mapping.
+  # A warning is emitted if the fit exceeds this value.
+  gps_rmse_target_m: 0.5
+
+  # Sampling grid spacing (in pixels) for evaluating transform residuals
+  # across the mosaic.
+  grid_sample_spacing_px: 500
+
+# ---------------------------------------------------------------------------
+# Phase 7 — Defect Quantification
+# ---------------------------------------------------------------------------
+# Morphological processing, skeletonisation, and width profiling of detected
+# defect masks to produce metric measurements (length, width, area).
+quantification:
+  # Minimum skeleton branch length (px).  Shorter branches are pruned as
+  # noise.
+  skeleton_min_length_px: 5
+
+  # Number of evenly-spaced points along the skeleton at which
+  # perpendicular width is measured.
+  width_sample_points: 10
+
+  # Cross-validation tolerance: maximum acceptable relative difference
+  # between mask-pixel-count area and contour-based area.  2% = 0.02.
+  area_cross_validation_tolerance: 0.02
+
+  # Elongation (length / width) above which a defect is classified as a
+  # crack rather than a patch/spall.
+  elongation_crack_threshold: 5.0
+
+  # Elongation range [min, max] that characterises construction joints
+  # (helps avoid false positives from straight, regular joints).
+  elongation_joint_range: [2.0, 4.0]
+
+  # Morphological dilation kernel size (odd integer) applied to masks
+  # before quantification to close small gaps.
+  morph_dilation_kernel: 3
+
+  # Number of dilation iterations.
+  morph_dilation_iterations: 2
+
+# ---------------------------------------------------------------------------
+# Phase 8 — Vulnerability Index (VI) Scoring
+# ---------------------------------------------------------------------------
+# Computes a per-zone and per-façade vulnerability index based on defect
+# type, severity, and density.  Aligned with IS 13311 classification bands.
+vulnerability_index:
+  # Relative weight assigned to each defect type when computing VI.
+  # Higher weight = greater contribution to the vulnerability score.
+  defect_weights:
+    crack: 1.0
+    spalling: 0.8
+    corrosion: 0.6
+    water_seepage: 0.5
+    efflorescence: 0.3
+    plaster_detachment: 0.7
+    structural_displacement: 1.0
+    stain: 0.1
+
+  # Multiplier applied based on crack/defect width severity class.
+  severity_multipliers:
+    hairline: 0.3   # < 0.2 mm
+    fine: 0.5        # 0.2 – 1 mm
+    medium: 0.8      # 1 – 5 mm
+    wide: 1.0        # > 5 mm
+
+  # Width thresholds (mm) that define the severity class boundaries.
+  width_thresholds_mm:
+    hairline_max: 0.2
+    fine_max: 1.0
+    medium_max: 5.0
+
+  # IS 13311–aligned vulnerability classification bands (0–100 scale).
+  # Scores at or below *_max fall into the named class.
+  class_thresholds:
+    minor_max: 20
+    moderate_max: 40
+    significant_max: 60
+    severe_max: 80
+    # Scores above 80 are implicitly classified as "critical".
+
+  # Façade grid layout string, e.g. "4x4" produces zones A1–D4.
+  facade_grid: "4x4"
+
+# ---------------------------------------------------------------------------
+# Phase 9 — Temporal / Multi-Cycle Analysis
+# ---------------------------------------------------------------------------
+# Registers mosaics from successive inspection cycles and tracks defect
+# evolution (growth, new, resolved) over time.
+temporal:
+  # Gaussian sigma for smoothing temporal trend curves.
+  gaussian_sigma: 2.0
+
+  # IoU threshold above which a defect in the current cycle is considered
+  # the same as one propagated from a previous cycle.
+  iou_propagated_threshold: 0.3
+
+  # IoU threshold below which a detection is treated as a brand-new defect
+  # (not seen in any prior cycle).
+  iou_new_threshold: 0.1
+
+  # Maximum allowable registration error (px) between consecutive mosaics.
+  # Exceeding this triggers a warning and optional manual review.
+  registration_max_error_px: 3.0
+
+  # Morphological opening kernel size used to clean up difference masks
+  # between cycles.
+  morph_opening_kernel: 3
+
+# ---------------------------------------------------------------------------
+# Phase 10 — Feature Extraction (for False-Positive Classifier)
+# ---------------------------------------------------------------------------
+# Extracts hand-crafted texture features (LBP, GLCM) and deep features
+# (ResNet-50) from each detection's image patch.
+feature_extraction:
+  # Square patch size (px) cropped around each detection centroid.
+  patch_size: 96
+
+  # Local Binary Pattern radius and number of sampling points.
+  lbp_radius: 3
+  lbp_n_points: 24
+
+  # Grey-Level Co-occurrence Matrix distances and angles (radians).
+  # Angles correspond to 0°, 45°, 90°, and 135°.
+  glcm_distances: [1]
+  glcm_angles: [0, 0.785, 1.571, 2.356]
+
+  # ResNet-50 penultimate-layer output dimensionality.
+  resnet_output_dim: 2048
+
+  # PCA reduction applied to the concatenated feature vector.
+  pca_n_components: 128
+
+  # Minimum cumulative explained variance to retain when choosing PCA
+  # components automatically (used when pca_n_components is null).
+  pca_explained_variance_target: 0.85
+
+  # Hard time limit (ms) for extracting features from a single patch.
+  # Exceeding this logs a warning and returns a partial feature vector.
+  extraction_time_limit_ms: 200
+
+# ---------------------------------------------------------------------------
+# Phase 11 — False-Positive Filter (XGBoost Classifier)
+# ---------------------------------------------------------------------------
+# Bayesian-optimised XGBoost binary classifier that separates true defects
+# from false positives using the extracted feature vectors.
+false_positive_filter:
+  # Master switch — set to false to skip FP filtering entirely.
+  enabled: true
+
+  # Classification probability threshold.  Detections with P(true defect)
+  # below this value are flagged as false positives.
+  # Raised from the default 0.5 to improve precision at the cost of recall.
+  classification_threshold: 0.75
+
+  # --- XGBoost hyper-parameter search ranges (Bayesian optimisation) ---
+  xgb_n_estimators_range: [100, 500]
+  xgb_max_depth_range: [3, 8]
+  xgb_learning_rate_range: [0.01, 0.3]
+
+  # Number of Bayesian optimisation iterations.
+  bayesian_opt_iterations: 50
+
+  # --- Data splits ---
+  train_split: 0.70
+  val_split: 0.15
+  test_split: 0.15
+
+  # --- Training-time data augmentation ---
+  augmentation:
+    flip_horizontal: true
+    flip_vertical: true
+    rotation_range: 15          # degrees
+    brightness_jitter: 0.20     # ± 20%
+    noise_sigma_range: [5, 15]  # additive Gaussian noise σ
+
+  # --- Performance targets (used for early stopping / alerts) ---
+  # Minimum acceptable precision on the validation set.
+  precision_target: 0.90
+
+  # Minimum acceptable F1 score on the validation set.
+  f1_target: 0.85
+
+# ---------------------------------------------------------------------------
+# Phase 12 — Report Generation
+# ---------------------------------------------------------------------------
+# PDF report rendering options.
+reporting:
+  pdf_page_size: "A4"
+
+  # Maximum time (seconds) allowed for generating a single report.
+  report_generation_timeout_sec: 60
+
+  font_family: "Helvetica"
+
+  # Company name printed on the report cover page and headers.
+  company_name: "Cortex Construction Solutions Pvt. Ltd."
+
+  # If true, the PDF is assembled entirely in memory (faster, but uses
+  # more RAM).  Set to false to use temp-file–based generation.
+  use_in_memory_generation: true
+
+# ---------------------------------------------------------------------------
+# Global Pipeline Settings
+# ---------------------------------------------------------------------------
+pipeline:
+  # Logging verbosity: DEBUG | INFO | WARNING | ERROR | CRITICAL
+  log_level: "INFO"
+
+  # Number of parallel worker processes / threads.
+  num_workers: 4
+
+  # When true, intermediate outputs (enhanced images, feature maps, etc.)
+  # are saved to disk for debugging and reproducibility.
+  save_intermediate_outputs: true
+
+  # Final structured output format: "json" or "csv".
+  output_format: "json"
+
+  # Defect model confidence threshold. Detections below this score are discarded.
+  confidence_threshold: 0.50
