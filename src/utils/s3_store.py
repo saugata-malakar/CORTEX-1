@@ -83,7 +83,8 @@ class S3Store:
                 logger.error("Failed to upload artifact to S3 bucket %s: %s. Falling back to local.", self.bucket_name, e)
 
         # 2. Local fallback mock directory
-        mock_dir = Path(__file__).parents[2] / "data" / "reports" / "s3_mock" / building_id / safe_ts
+        data_root = Path(os.getenv("CORTEX_DATA_DIR", str(Path(__file__).parents[2] / "data")))
+        mock_dir = data_root / "reports" / "s3_mock" / building_id / safe_ts
         mock_dir.mkdir(parents=True, exist_ok=True)
         local_path = mock_dir / f"{artifact_type}.json"
 

@@ -1,6 +1,14 @@
+# Render Blueprint — Cortex Platform
+# Provisions a managed PostgreSQL for durable storage.
+# Falls back to SQLite automatically if DB is unreachable.
+# Free-tier Postgres is removed after ~30 days — upgrade plan for production.
+
 databases:
   - name: cortex-db
     plan: free
+    region: oregon
+    databaseName: cortex
+    user: cortex
 
 services:
   - type: web
@@ -8,11 +16,18 @@ services:
     env: docker
     plan: free
     region: oregon
+    healthCheckPath: /api/health
+    autoDeploy: true
     envVars:
       - key: RENDER
         value: "true"
       - key: PORT
         value: "8000"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: CORTEX_DATA_DIR
+        value: /app/data
+      # Durable relational store — injected from the managed Postgres above.
       - key: CORTEX_DB_URL
         fromDatabase:
           name: cortex-db
@@ -23,4 +38,6 @@ services:
           property: connectionString
       - key: JWT_SECRET
         generateValue: true
-
+      # Restrict CORS to deployed origin.
+      - key: CORTEX_ALLOWED_ORIGINS
+        value: "https://cortex-1-1.onrender.com"

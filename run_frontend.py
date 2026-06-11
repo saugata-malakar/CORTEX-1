@@ -22,7 +22,7 @@ from typing import List, Optional, Any
 
 import redis
 import uvicorn
-from fastapi import FastAPI, HTTPException, Response, Depends, Request, status, File, UploadFile
+from fastapi import FastAPI, HTTPException, Response, Depends, Request, status, File, UploadFile, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
@@ -165,8 +165,14 @@ class CacheManager:
         self.max_local_size = max_local_size
         self.in_memory_cache = OrderedDict()
         self.in_memory_ttls = {}
-        
-        url = redis_url or os.getenv("CORTEX_REDIS_URL", "redis://localhost:6379/0")
+
+        # Only attempt Redis when explicitly configured. Probing a non-existent
+        # localhost Redis on every boot just adds cold-start latency (which can
+        # delay health checks) and noisy logs on hosts without Redis.
+        url = redis_url or os.getenv("CORTEX_REDIS_URL") or os.getenv("REDIS_URL")
+        if not url:
+            logger.info("No Redis configured (CORTEX_REDIS_URL/REDIS_URL unset). Using bounded in-memory cache.")
+            return
         try:
             self.redis_client = redis.Redis.from_url(url, socket_timeout=1)
             self.redis_client.ping()
@@ -266,11 +272,22 @@ app = FastAPI(
 
 # Mount middleware
 app.add_middleware(PrometheusMetricsMiddleware)
+
+# CORS — spec-correct and environment-driven.
+# A wildcard origin cannot be combined with credentials (browsers reject it),
+# so we only enable credentials when explicit origins are configured.
+_origins_env = os.getenv("CORTEX_ALLOWED_ORIGINS", "").strip()
+if _origins_env:
+    _allow_origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
+    _allow_credentials = True
+else:
+    _allow_origins = ["*"]
+    _allow_credentials = False
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=_allow_origins,
+    allow_credentials=_allow_credentials,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -454,14 +471,29 @@ async def get_defects(inspection_id: Optional[str] = None):
 
 @app.post("/api/analyze-image", dependencies=[Depends(limit_write)])
 @app.post("/api/v1/analyze-image", dependencies=[Depends(limit_write)])
-async def analyze_image_endpoint(file: UploadFile = File(...)):
+async def analyze_image_endpoint(
+    file: UploadFile = File(...),
+    real_width_m: Optional[float] = Form(None),
+    real_height_m: Optional[float] = Form(None),
+    measurement_method: str = Form("trigonometry"),
+):
     """
     Endpoint for uploading concrete/facade images to analyze cracks, rebar spacing,
     severity, and receive structural recommendations.
+
+    Accepts the real-world dimensions the image covers (real_width_m x real_height_m,
+    in metres) so the engine can compute an accurate ground-sampling distance, and a
+    measurement_method ("trigonometry" for the real CV engine, "coin_flip" for the
+    legacy heuristic estimate).
     """
     try:
         content = await file.read()
-        analysis = analyze_structural_image(content, file.filename)
+        analysis = analyze_structural_image(
+            content, file.filename,
+            real_width_m=real_width_m,
+            real_height_m=real_height_m,
+            measurement_method=measurement_method,
+        )
         return analysis
     except Exception as e:
         logger.error("Failed to analyze uploaded image", filename=file.filename, error=str(e))
@@ -509,11 +541,20 @@ async def export_compiled_pdf_endpoint(data: List[dict]):
 
 @app.post("/api/upload-images", dependencies=[Depends(limit_write)])
 @app.post("/api/v1/upload-images", dependencies=[Depends(limit_write)])
-async def upload_images_endpoint(files: List[UploadFile] = File(...)):
+async def upload_images_endpoint(
+    files: List[UploadFile] = File(...),
+    real_width_m: Optional[float] = Form(None),
+    real_height_m: Optional[float] = Form(None),
+    measurement_method: str = Form("trigonometry"),
+):
     """
     Endpoint for uploading multiple drone facade images.
     Performs real-time quality gate checks (blur and underexposure) and
     runs structural defect analysis on quality-passing frames.
+
+    real_width_m / real_height_m are the physical dimensions (metres) the frame
+    covers, used for accurate GSD; measurement_method selects the real
+    "trigonometry" engine or the legacy "coin_flip" heuristic.
     """
     import cv2
     import numpy as np
@@ -539,22 +580,31 @@ async def upload_images_endpoint(files: List[UploadFile] = File(...)):
             lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
             mean_int = float(np.mean(gray))
             
-            # Threshold flags (matching metadata_parser.py defaults)
-            is_blurry = lap_var < 100.0
-            is_underexposed = mean_int < 30.0
+            # Threshold flags. The blur gate is intentionally lenient: facade
+            # close-ups of a single crack on smooth concrete have low Laplacian
+            # variance yet are perfectly analysable. Configurable via env.
+            _blur_thr = float(os.getenv("CORTEX_BLUR_THRESHOLD", "12.0"))
+            _exposure_thr = float(os.getenv("CORTEX_EXPOSURE_THRESHOLD", "25.0"))
+            is_blurry = lap_var < _blur_thr
+            is_underexposed = mean_int < _exposure_thr
             passed = not is_blurry and not is_underexposed
             
             warnings = []
             if is_blurry:
-                warnings.append(f"Image is blurry (Laplacian variance {lap_var:.1f} < 100.0). Reshoot suggested.")
+                warnings.append(f"Image is blurry (Laplacian variance {lap_var:.1f} < {_blur_thr}). Reshoot suggested.")
             if is_underexposed:
-                warnings.append(f"Image is underexposed (Mean intensity {mean_int:.1f} < 30.0). Reshoot suggested.")
+                warnings.append(f"Image is underexposed (Mean intensity {mean_int:.1f} < {_exposure_thr}). Reshoot suggested.")
                 
             # Perform civil analysis if passed
             analysis = None
             if passed:
                 try:
-                    analysis = analyze_structural_image(content, file.filename)
+                    analysis = analyze_structural_image(
+                        content, file.filename,
+                        real_width_m=real_width_m,
+                        real_height_m=real_height_m,
+                        measurement_method=measurement_method,
+                    )
                 except Exception as e:
                     warnings.append(f"Analysis error: {str(e)}")
             
@@ -804,8 +854,48 @@ async def get_job_status(job_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 # 8. Mounting static dashboard files and reports
-app.mount("/data", StaticFiles(directory=str(WORKSPACE / "data")), name="data")
-app.mount("/", StaticFiles(directory=str(WORKSPACE / "frontend" / "out"), html=True), name="frontend")
+class SecureStaticFiles(StaticFiles):
+    """StaticFiles that refuses to serve database files.
+
+    The data directory contains the SQLite database (defects.db plus its
+    -wal/-shm sidecars). Serving those over HTTP would leak the entire
+    datastore, so we block any request for them with a 403.
+    """
+
+    _BLOCKED_SUFFIXES = (".db", ".db-wal", ".db-shm", ".db-journal",
+                         ".sqlite", ".sqlite3")
+
+    async def get_response(self, path, scope):
+        lowered = path.lower()
+        if lowered.endswith(self._BLOCKED_SUFFIXES) or "defects.db" in lowered:
+            from starlette.responses import PlainTextResponse
+            return PlainTextResponse("Forbidden", status_code=403)
+        return await super().get_response(path, scope)
+
+
+# Serve report artifacts from the (possibly persistent) data directory.
+_DATA_MOUNT = Path(os.getenv("CORTEX_DATA_DIR", str(WORKSPACE / "data")))
+if _DATA_MOUNT.exists():
+    app.mount("/data", SecureStaticFiles(directory=str(_DATA_MOUNT)), name="data")
+else:
+    logger.warning("Data directory %s not found — /data static mount skipped.", _DATA_MOUNT)
+
+# Serve the compiled Next.js frontend. Guard the mount so a missing build
+# (e.g. local dev without `npm run build`) does not crash server startup.
+_FRONTEND_DIR = WORKSPACE / "frontend" / "out"
+if _FRONTEND_DIR.exists() and any(_FRONTEND_DIR.iterdir()):
+    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")
+else:
+    logger.warning("Frontend build not found at %s — serving API only.", _FRONTEND_DIR)
+
+    @app.get("/", include_in_schema=False)
+    async def _frontend_missing():
+        return {
+            "status": "ok",
+            "message": "Cortex API is running. Frontend build not present.",
+            "docs": "/docs",
+            "health": "/api/health",
+        }
 
 # 9. Launcher Helpers
 def is_port_in_use(port: int) -> bool:

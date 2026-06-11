@@ -35,6 +35,7 @@ boto3==1.34.101
 opencv-python-headless==4.9.0.80
 numpy==1.26.4
 scikit-learn==1.4.2
+scikit-image==0.22.0          # crack skeletonisation for the CV measurement method
 pandas>=2.0.0
 
 # ── Observability ─────────────────────────────────────────────────────────────

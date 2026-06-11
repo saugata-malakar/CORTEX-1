@@ -704,7 +704,7 @@ function BlueprintView({ crackType, m, width = 380, height = 250 }) {
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     const W = canvas.width, H = canvas.height;
-    const crack = CRACK_DB[crackType];
+    const crack = CRACK_DB[crackType] || { riskColor: "#FBB924", is_code: "IS 456", label: "Crack" };
 
     ctx.fillStyle = "#0B1628";
     ctx.fillRect(0, 0, W, H);
@@ -785,6 +785,37 @@ function BlueprintView({ crackType, m, width = 380, height = 250 }) {
         ctx.beginPath(); ctx.moveTo(W*0.35, H*0.5); ctx.lineTo(W*0.65, H*0.5); ctx.stroke();
         ctx.setLineDash([]);
       }
+    } else {
+      // Generic wall/slab panel for settlement, shrinkage, hairline and any
+      // other detected type — previously these rendered as an empty grid.
+      ctx.strokeStyle = "rgba(59,130,246,0.7)";
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(W*0.12, H*0.15, W*0.76, H*0.7);
+      // Mesh reinforcement hint
+      ctx.strokeStyle = "rgba(255,140,0,0.5)";
+      ctx.lineWidth = 1;
+      for (let x = W*0.2; x < W*0.85; x += 26) { ctx.beginPath(); ctx.moveTo(x, H*0.17); ctx.lineTo(x, H*0.83); ctx.stroke(); }
+      for (let y = H*0.22; y < H*0.85; y += 26) { ctx.beginPath(); ctx.moveTo(W*0.14, y); ctx.lineTo(W*0.86, y); ctx.stroke(); }
+
+      // Crack pattern by type
+      ctx.strokeStyle = crack.riskColor;
+      ctx.lineWidth = 2.2;
+      if (crackType === "settlement") {
+        // Stepped diagonal settlement crack
+        ctx.beginPath();
+        ctx.moveTo(W*0.25, H*0.2);
+        ctx.lineTo(W*0.4, H*0.4); ctx.lineTo(W*0.52, H*0.4);
+        ctx.lineTo(W*0.66, H*0.62); ctx.lineTo(W*0.78, H*0.62);
+        ctx.stroke();
+      } else if (crackType === "shrinkage" || crackType === "hairline") {
+        // Fine map / craze cracking
+        ctx.lineWidth = 1;
+        const seg = [[0.3,0.35,0.45,0.5],[0.45,0.5,0.4,0.66],[0.55,0.4,0.68,0.55],[0.6,0.6,0.5,0.72],[0.4,0.5,0.58,0.52]];
+        seg.forEach(([x1,y1,x2,y2]) => { ctx.beginPath(); ctx.moveTo(W*x1,H*y1); ctx.lineTo(W*x2,H*y2); ctx.stroke(); });
+      } else {
+        // Generic single crack
+        ctx.beginPath(); ctx.moveTo(W*0.3, H*0.3); ctx.lineTo(W*0.7, H*0.68); ctx.stroke();
+      }
     }
 
     // Dimension lines
@@ -806,215 +837,135 @@ function BlueprintView({ crackType, m, width = 380, height = 250 }) {
   return <canvas ref={canvasRef} width={width} height={height} style={{ width:"100%", height:height, borderRadius:8 }} aria-label="Blueprint view"/>;
 }
 
-// ─── VISUAL OVERLAY CANVAS ────────────────────────────────────────────────────
-function VisualOverlay({ imageUrl, crackType, width = 380, height = 250 }) {
+// --- IMAGE OVERLAY: single canvas draws photo + real crack paths together ---
+function ImageOverlay({ imageUrl, crackType, analyzedData }) {
   const canvasRef = useRef(null);
+  const containerRef = useRef(null);
+  const crack = CRACK_DB[crackType] || { riskColor: "#FBB924" };
+  const hasData = analyzedData && !analyzedData.error && analyzedData.defect_found !== false;
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    const W = canvas.width, H = canvas.height;
-    const cfg = CRACK_DB[crackType];
+    const container = containerRef.current;
+    if (!canvas || !container || !imageUrl) return;
 
-    function draw() {
-      ctx.clearRect(0, 0, W, H);
+    let ro;
+    const img = new Image();
+    img.onload = () => {
+      const draw = () => {
+        const cw = container.clientWidth || 1;
+        const ch = container.clientHeight || 1;
+        canvas.width = cw;
+        canvas.height = ch;
+        const ctx = canvas.getContext("2d");
+        ctx.clearRect(0, 0, cw, ch);
 
-      // Dark overlay base
-      ctx.fillStyle = "#0A0C14";
-      ctx.fillRect(0, 0, W, H);
+        // contain-fit: whole image visible, preserve aspect, centred
+        const ar = img.width / img.height;
+        const car = cw / ch;
+        let dw, dh, dx, dy;
+        if (ar > car) { dw = cw; dh = cw / ar; dx = 0; dy = (ch - dh) / 2; }
+        else { dh = ch; dw = ch * ar; dy = 0; dx = (cw - dw) / 2; }
+        ctx.drawImage(img, dx, dy, dw, dh);
 
-      // If real image loaded
-      if (imageUrl) {
-        const img = new Image();
-        img.onload = () => {
-          ctx.drawImage(img, 0, 0, W, H);
-          if (crackType !== "none") {
-            drawOverlay();
+        if (!hasData) return;
+        const cracks = (analyzedData?.cracks || []).filter(c => c.length_cm > 0);
+        const riskColor = crack.riskColor || "#FF4444";
+        const mapX = nx => dx + nx * dw;
+        const mapY = ny => dy + ny * dh;
+
+        cracks.slice(0, 12).forEach((c, i) => {
+          const isPrimary = i === 0;
+          const color = isPrimary ? riskColor : "rgba(255,210,0,0.95)";
+          const pts = c.contour_pts;
+          if (pts && pts.length >= 2) {
+            // soft dark halo so the line reads on light or dark concrete
+            ctx.beginPath();
+            ctx.moveTo(mapX(pts[0][0]), mapY(pts[0][1]));
+            for (let j = 1; j < pts.length; j++) ctx.lineTo(mapX(pts[j][0]), mapY(pts[j][1]));
+            ctx.strokeStyle = "rgba(0,0,0,0.55)";
+            ctx.lineWidth = (isPrimary ? 3 : 2) + 2;
+            ctx.lineJoin = "round"; ctx.lineCap = "round";
+            ctx.stroke();
+            // coloured crack line
+            ctx.strokeStyle = color;
+            ctx.lineWidth = isPrimary ? 3 : 2;
+            ctx.stroke();
           }
-        };
-        img.src = imageUrl;
-      } else {
-        if (crackType === "none") {
-          ctx.fillStyle = "rgba(122, 139, 168, 0.4)";
-          ctx.font = `11px ${C.mono}`;
+          // numbered badge at the crack start (matches table "Crack N")
+          const bx = pts ? mapX(pts[0][0]) : mapX(0.5);
+          const by = pts ? mapY(pts[0][1]) : mapY(0.5);
+          ctx.beginPath();
+          ctx.arc(bx, by, 10, 0, Math.PI * 2);
+          ctx.fillStyle = color;
+          ctx.fill();
+          ctx.strokeStyle = "rgba(0,0,0,0.6)";
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+          ctx.fillStyle = "#000";
+          ctx.font = "bold 12px monospace";
           ctx.textAlign = "center";
-          ctx.fillText("NO ACTIVE SCAN DATA", W / 2, H / 2 - 8);
-          ctx.font = `8px ${C.mono}`;
-          ctx.fillText("Select a scenario or upload a UAV image to analyze", W / 2, H / 2 + 10);
-          return;
-        }
-        // Draw synthetic concrete texture
-        drawConcreteTexture(ctx, W, H);
-        drawOverlay();
-      }
-    }
-
-    function drawConcreteTexture(ctx, W, H) {
-      ctx.fillStyle = "#1A1E28";
-      ctx.fillRect(0, 0, W, H);
-      for (let i = 0; i < 800; i++) {
-        const x = Math.random() * W;
-        const y = Math.random() * H;
-        const r = Math.random() * 2.5;
-        const a = Math.random() * 0.08;
-        ctx.fillStyle = `rgba(255,255,255,${a})`;
-        ctx.beginPath();
-        ctx.arc(x, y, r, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-
-    function drawOverlay() {
-      const crackColor = cfg.model.crackColor;
-      const hexColor   = crackColor.toString(16).padStart(6, "0");
-      const r = parseInt(hexColor.slice(0,2),16);
-      const g = parseInt(hexColor.slice(2,4),16);
-      const b = parseInt(hexColor.slice(4,6),16);
-
-      if (crackType === "shear") {
-        // Diagonal crack line
-        ctx.beginPath();
-        let cx = W * 0.25, cy = H * 0.2;
-        for (let i = 0; i < 20; i++) {
-          const nx = cx + (W * 0.032) + (Math.random()-0.5)*8;
-          const ny = cy + (H * 0.035) + (Math.random()-0.5)*6;
-          i === 0 ? ctx.moveTo(cx,cy) : ctx.lineTo(nx,ny);
-          cx = nx; cy = ny;
-        }
-        ctx.strokeStyle = `rgba(${r},${g},${b},0.85)`;
-        ctx.lineWidth   = 3.5;
-        ctx.lineCap     = "round";
-        ctx.stroke();
-
-        // Width annotation
-        ctx.strokeStyle = "#FBB924";
-        ctx.lineWidth   = 1.2;
-        ctx.setLineDash([4,3]);
-        ctx.beginPath(); ctx.moveTo(W*0.4,H*0.38); ctx.lineTo(W*0.55,H*0.38); ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.fillStyle   = "#FBB924";
-        ctx.font        = `bold 10px ${C.mono}`;
-        ctx.fillText("w=63.64mm", W*0.41, H*0.35);
-
-        // Spacing line
-        ctx.strokeStyle = "#22C55E";
-        ctx.lineWidth   = 1;
-        ctx.setLineDash([3,3]);
-        ctx.beginPath(); ctx.moveTo(W*0.15,H*0.6); ctx.lineTo(W*0.62,H*0.6); ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.fillStyle   = "#22C55E";
-        ctx.font        = `bold 9px ${C.mono}`;
-        ctx.fillText("s = 45.4 cm", W*0.18, H*0.57);
-
-      } else if (crackType === "flexural") {
-        ctx.beginPath();
-        let cx = W*0.5, cy = H*0.85;
-        for (let i = 0; i < 14; i++) {
-          const nx = cx + (Math.random()-0.5)*7;
-          const ny = cy - H*0.04;
-          i===0 ? ctx.moveTo(cx,cy) : ctx.lineTo(nx,ny);
-          cx = nx; cy = ny;
-        }
-        ctx.strokeStyle = `rgba(${r},${g},${b},0.85)`;
-        ctx.lineWidth   = 2.5;
-        ctx.lineCap     = "round";
-        ctx.stroke();
-        ctx.setLineDash([5,4]);
-        ctx.strokeStyle = "rgba(99,179,255,0.5)";
-        ctx.lineWidth   = 1;
-        ctx.beginPath(); ctx.moveTo(W*0.1,H*0.4); ctx.lineTo(W*0.9,H*0.4); ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.fillStyle   = "rgba(99,179,255,0.7)";
-        ctx.font        = `8px ${C.mono}`;
-        ctx.fillText("Neutral Axis", W*0.72, H*0.37);
-
-      } else if (crackType === "corrosion") {
-        for (let k = 0; k < 3; k++) {
-          const yOff = H*0.3 + k * H*0.15;
-          ctx.beginPath();
-          let cx = W*0.1, cy = yOff;
-          for (let i = 0; i < 18; i++) {
-            const nx = cx + W*0.045 + (Math.random()-0.5)*6;
-            const ny = cy + (Math.random()-0.5)*5;
-            i===0 ? ctx.moveTo(cx,cy) : ctx.lineTo(nx,ny);
-            cx=nx; cy=ny;
-          }
-          ctx.strokeStyle = `rgba(${r},${g},${b},0.8)`;
-          ctx.lineWidth   = 2;
-          ctx.lineCap     = "round";
-          ctx.stroke();
-        }
-        ctx.fillStyle = "rgba(180,80,0,0.15)";
-        ctx.beginPath(); ctx.arc(W*0.5, H*0.5, 60, 0, Math.PI*2); ctx.fill();
-        ctx.fillStyle = "#FF8C00";
-        ctx.font = `bold 9px ${C.mono}`;
-        ctx.fillText("RUST STAINING", W*0.36, H*0.5);
-
-      } else {
-        // Map cracks
-        for (let k = 0; k < 18; k++) {
-          const angle = (k / 18) * Math.PI * 2;
-          ctx.beginPath();
-          let cx = W*0.5 + Math.cos(angle)*W*0.22;
-          let cy = H*0.5 + Math.sin(angle)*H*0.2;
-          ctx.moveTo(cx,cy);
-          for (let i = 0; i < 8; i++) {
-            cx += (Math.random()-0.5)*15;
-            cy += (Math.random()-0.5)*15;
-            ctx.lineTo(cx,cy);
-          }
-          ctx.strokeStyle = `rgba(${r},${g},${b},0.5)`;
-          ctx.lineWidth   = 0.8;
-          ctx.lineCap     = "round";
-          ctx.stroke();
-        }
-      }
-
-      // HUD overlays
-      ctx.fillStyle = "rgba(0,0,0,0.5)";
-      ctx.fillRect(6, 6, 160, 16);
-      ctx.fillStyle = "#3BF"; ctx.font = `8px ${C.mono}`;
-      ctx.fillText(`[FEED: UAV_CAM_01] GSD:0.15 CM/PX`, 10, 17);
-
-      ctx.fillStyle = "rgba(0,0,0,0.5)";
-      ctx.fillRect(W-145, 6, 140, 16);
-      ctx.fillStyle = "#3F3"; ctx.font = `8px ${C.mono}`;
-      ctx.fillText(`MODE: CRACK_DETECTOR_V2`, W-142, 17);
-
-      // Crack label box
-      const lx = W*0.28, ly = H*0.3;
-      ctx.fillStyle = "rgba(0,0,0,0.75)";
-      ctx.fillRect(lx, ly, 150, 32);
-      ctx.strokeStyle = `rgba(${r},${g},${b},0.9)`;
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(lx, ly, 150, 32);
-      ctx.fillStyle = `rgb(${r},${g},${b})`;
-      ctx.font = `bold 10px ${C.mono}`;
-      ctx.fillText(cfg.label.toUpperCase(), lx+8, ly+13);
-      ctx.fillStyle = "#AAB"; ctx.font = `8px ${C.mono}`;
-      ctx.fillText(`w=${crackType==="shear"?"63.64":"12.30"}mm  l=${crackType==="shear"?"40":"28"}cm`, lx+8, ly+26);
-
-      // Lat/lon
-      ctx.fillStyle = "rgba(0,0,0,0.5)";
-      ctx.fillRect(4, H-20, 220, 16);
-      ctx.fillStyle = "#888"; ctx.font = `7px ${C.mono}`;
-      ctx.fillText("LAT: 22.56°N | LON: 87.31°E | SCANNER LOCKED", 8, H-9);
-    }
-
-    draw();
-  }, [imageUrl, crackType]);
+          ctx.textBaseline = "middle";
+          ctx.fillText(String(i + 1), bx, by);
+          ctx.textAlign = "start";
+          ctx.textBaseline = "alphabetic";
+        });
+      };
+      draw();
+      ro = new ResizeObserver(draw);
+      ro.observe(container);
+    };
+    img.src = imageUrl;
+    return () => { if (ro) ro.disconnect(); };
+  }, [imageUrl, hasData, analyzedData, crack.riskColor]);
 
   return (
-    <canvas
-      ref={canvasRef}
-      width={width}
-      height={height}
-      style={{ width: "100%", height: height, borderRadius: 8, display: "block" }}
-      aria-label="Crack visual overlay"
-    />
+    <div ref={containerRef} style={{ position: "relative", width: "100%", height: "100%", background: "#080A0F", overflow: "hidden" }}>
+      {imageUrl ? (
+        <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block" }} />
+      ) : (
+        <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "rgba(122,139,168,0.45)", fontFamily: C.mono, fontSize: 11, gap: 6 }}>
+          <div style={{ fontSize: 20 }}>CAM</div>
+          <div>NO ACTIVE SCAN DATA</div>
+          <div style={{ fontSize: 9 }}>Upload an image and click Analyze</div>
+        </div>
+      )}
+
+      {hasData && (
+        <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+          <div style={{ position: "absolute", top: 6, left: 6, background: "rgba(0,0,0,0.78)", border: `1px solid ${crack.riskColor}`, borderRadius: 4, padding: "2px 7px", fontFamily: C.mono, fontSize: 9, fontWeight: 700, color: crack.riskColor }}>
+            {analyzedData.crack_type}  ({analyzedData.crack_count} crack{analyzedData.crack_count === 1 ? "" : "s"})
+          </div>
+          <div style={{ position: "absolute", top: 6, right: 6, background: crack.riskColor, borderRadius: 4, padding: "2px 7px", fontFamily: C.mono, fontSize: 9, fontWeight: 800, color: "#000" }}>
+            {(analyzedData.severity || "").toUpperCase()}
+          </div>
+          <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "rgba(0,0,0,0.82)", borderTop: `1px solid rgba(255,255,255,0.07)`, display: "flex", fontFamily: C.mono }}>
+            {[
+              { l: "LEN", v: `${analyzedData.length_cm}cm` },
+              { l: "W", v: `${analyzedData.width_mm}mm` },
+              { l: "ANG", v: `${analyzedData.orientation_angle}deg` },
+              { l: "V-IDX", v: `${analyzedData.v_index}` },
+            ].map((item, i) => (
+              <div key={i} style={{ flex: 1, padding: "4px 4px", borderRight: i < 3 ? `1px solid rgba(255,255,255,0.07)` : "none", textAlign: "center" }}>
+                <div style={{ fontSize: 7, color: "rgba(255,255,255,0.4)", letterSpacing: "0.04em" }}>{item.l}</div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "#fff" }}>{item.v}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {analyzedData && !analyzedData.error && analyzedData.defect_found === false && imageUrl && (
+        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+          <div style={{ background: "rgba(34,197,94,0.15)", border: "1px solid #22c55e", borderRadius: 8, padding: "8px 18px", fontFamily: C.mono, fontSize: 11, fontWeight: 700, color: "#22c55e" }}>
+            No Crack - Surface Sound
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
+
 
 // ─── METRIC CARD ─────────────────────────────────────────────────────────────
 function MetricCard({ label, value, unit, color }) {
@@ -1041,13 +992,21 @@ export default function CortexCrackAnalyzer({ authToken, getApiUrl, onDefectSave
   const [slots, setSlots] = useState([
     { id: 1, crackType: "none", uploadedImg: null, analyzed: false, analyzedData: null, uploadedLocalPath: "", analyzing: false, activeView: "overlay" },
     { id: 2, crackType: "none", uploadedImg: null, analyzed: false, analyzedData: null, uploadedLocalPath: "", analyzing: false, activeView: "overlay" },
-    { id: 3, crackType: "none", uploadedImg: null, analyzed: false, analyzedData: null, uploadedLocalPath: "", analyzing: false, activeView: "overlay" },
   ]);
   const [activeSlotIdx, setActiveSlotIdx] = useState(0);
   const fileRef = useRef(null);
 
   const [peekingSlotIdx, setPeekingSlotIdx] = useState(null);
   const peekTimerRef = useRef(null);
+
+  // ── User-supplied capture geometry & measurement mode ──────────────────────
+  // The real-world dimensions the frame covers drive an accurate ground-sampling
+  // distance; the method toggles the real CV+trigonometry engine vs the legacy
+  // heuristic ("coin flip") estimate.
+  const [realWidthM, setRealWidthM] = useState("3.0");
+  const [realHeightM, setRealHeightM] = useState("2.0");
+  const [measurementMethod, setMeasurementMethod] = useState("trigonometry");
+  const pendingAnalyzeRef = useRef(false);
 
   const handleMouseDownPeek = (idx) => {
     peekTimerRef.current = setTimeout(() => {
@@ -1180,50 +1139,37 @@ export default function CortexCrackAnalyzer({ authToken, getApiUrl, onDefectSave
     vi: (analyzedData.v_index || 0).toFixed(2),
   } : MEASUREMENTS[crackType];
 
-  const handleUpload = useCallback((e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setAnalyzing(true);
-    setAnalyzed(false);
-    setAnalyzedData(null);
-    setUploadedLocalPath("");
+  const performAnalysis = useCallback((file) => {
+    if (!file) { alert("Upload an image first."); return; }
+    updateSlot(activeSlotIdx, { analyzing: true, analyzed: false, analyzedData: null, uploadedLocalPath: "" });
 
     const formData = new FormData();
     formData.append("files", file);
+    if (realWidthM && parseFloat(realWidthM) > 0) formData.append("real_width_m", realWidthM);
+    if (realHeightM && parseFloat(realHeightM) > 0) formData.append("real_height_m", realHeightM);
+    formData.append("measurement_method", measurementMethod);
 
     const headers = {};
-    if (authToken) {
-      headers["Authorization"] = `Bearer ${authToken}`;
-    }
+    if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
 
-    fetch(getApiUrl("/api/upload-images"), {
-      method: "POST",
-      headers: headers,
-      body: formData
-    })
-    .then(res => {
-      if (!res.ok) throw new Error("API analysis failed");
-      return res.json();
-    })
-    .then(data => {
-      const result = data.results && data.results[0];
-      if (result) {
-        setUploadedImg(URL.createObjectURL(file));
-        setActiveView("overlay"); // Ensure visual overlay is shown
+    fetch(getApiUrl("/api/upload-images"), { method: "POST", headers, body: formData })
+      .then(res => { if (!res.ok) throw new Error("API analysis failed (HTTP " + res.status + ")"); return res.json(); })
+      .then(data => {
+        const result = data.results && data.results[0];
+        if (!result) { alert("No analysis result returned by server."); setAnalyzing(false); return; }
+        setActiveView("overlay");
         if (result.passed) {
           setAnalyzedData(result.analysis);
           setUploadedLocalPath(result.local_path);
-          
-          // Map defect name to visual scenario
           const type = result.analysis.crack_type || "";
-          if (type.toLowerCase().includes("shear")) setCrackType("shear");
+          if (result.analysis.defect_found === false || type.toLowerCase().includes("no crack")) setCrackType("none");
+          else if (type.toLowerCase().includes("shear")) setCrackType("shear");
           else if (type.toLowerCase().includes("corrosion") || type.toLowerCase().includes("spall")) setCrackType("corrosion");
           else if (type.toLowerCase().includes("flexural")) setCrackType("flexural");
           else if (type.toLowerCase().includes("settlement")) setCrackType("settlement");
           else if (type.toLowerCase().includes("compression")) setCrackType("compression");
           else if (type.toLowerCase().includes("shrinkage")) setCrackType("shrinkage");
           else setCrackType("hairline");
-          
           setAnalyzed(true);
         } else {
           setCrackType("none");
@@ -1231,19 +1177,51 @@ export default function CortexCrackAnalyzer({ authToken, getApiUrl, onDefectSave
             error: true,
             warnings: result.warnings,
             crack_type: "Quality Gate Rejection",
-            recommendation: "Ingestion rejected: " + result.warnings.join(" ")
+            recommendation: "Ingestion rejected: " + (result.warnings || []).join(" ")
           });
           setAnalyzed(true);
         }
-      }
-      setAnalyzing(false);
-    })
-    .catch(err => {
-      console.error(err);
-      setAnalyzing(false);
-      alert("Error analyzing image: " + err.message);
+        setAnalyzing(false);
+      })
+      .catch(err => {
+        console.error(err);
+        setAnalyzing(false);
+        alert("Error analyzing image: " + err.message);
+      });
+  }, [activeSlotIdx, authToken, getApiUrl, realWidthM, realHeightM, measurementMethod]);
+
+  const handleUpload = useCallback((e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    // Load image into the slot and show a preview.
+    updateSlot(activeSlotIdx, {
+      pendingFile: file,
+      uploadedImg: URL.createObjectURL(file),
+      analyzed: false,
+      analyzedData: null,
+      analyzing: false,
+      uploadedLocalPath: "",
+      crackType: "none",
+      activeView: "overlay",
     });
-  }, [authToken, getApiUrl, activeSlotIdx]);
+    if (fileRef.current) fileRef.current.value = "";
+    // If Analyze was pressed with no image, analyze immediately after picking.
+    if (pendingAnalyzeRef.current) {
+      pendingAnalyzeRef.current = false;
+      performAnalysis(file);
+    }
+  }, [activeSlotIdx, performAnalysis]);
+
+  const runAnalysis = useCallback(() => {
+    const file = slots[activeSlotIdx]?.pendingFile;
+    if (file) {
+      performAnalysis(file);
+    } else {
+      // No image yet — open the picker and analyze as soon as one is chosen.
+      pendingAnalyzeRef.current = true;
+      fileRef.current?.click();
+    }
+  }, [slots, activeSlotIdx, performAnalysis]);
 
   return (
     <div style={{ height: "100%", background: C.bg, fontFamily: C.body, color: C.text, display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -1327,20 +1305,17 @@ export default function CortexCrackAnalyzer({ authToken, getApiUrl, onDefectSave
         padding: "10px 16px 14px",
         flex: 1,
         minHeight: 0,
-        height: "100%",
-        overflow: "hidden"
+        overflow: "auto"
       }}>
 
-        {/* ── LEFT PANEL: 3-Viewport Grid ── */}
+        {/* ── LEFT PANEL: 2-Viewport Grid ── */}
         <div style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(3, 1fr)",
-          gridTemplateRows: "1fr auto",
+          display: "flex",
+          flexDirection: "column",
           gap: 12,
-          height: "100%",
-          minHeight: 0,
-          overflow: "hidden"
         }}>
+          {/* ── Slot cards row ── */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
           {slots.map((slot, idx) => {
             const isActive = idx === activeSlotIdx;
             const slotM = getMeasurementsForSlot(slot);
@@ -1361,8 +1336,8 @@ export default function CortexCrackAnalyzer({ authToken, getApiUrl, onDefectSave
                   display: "flex",
                   flexDirection: "column",
                   position: "relative",
-                  height: "100%",
-                  minHeight: 0,
+                  height: 380,
+                  minHeight: 380,
                 }}
                 onMouseOver={(e) => {
                   if (!isActive) e.currentTarget.style.borderColor = C.borderHi;
@@ -1440,7 +1415,7 @@ export default function CortexCrackAnalyzer({ authToken, getApiUrl, onDefectSave
                   onMouseLeave={handleMouseUpPeek}
                   onTouchStart={() => handleMouseDownPeek(idx)}
                   onTouchEnd={handleMouseUpPeek}
-                  style={{ position: "relative", background: "#080A0F", flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", cursor: "zoom-in" }}
+                  style={{ position: "relative", background: "#080A0F", flex: 1, minHeight: 300, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", cursor: "zoom-in" }}
                   title="Click and hold to 3D Touch Peek"
                 >
                   {slot.analyzing && (
@@ -1469,7 +1444,7 @@ export default function CortexCrackAnalyzer({ authToken, getApiUrl, onDefectSave
                     </div>
                   )}
 
-                  {slot.activeView === "overlay"   && <VisualOverlay imageUrl={slot.uploadedImg} crackType={slot.crackType} width={380} height={230}/>}
+                  {slot.activeView === "overlay"   && <ImageOverlay imageUrl={slot.uploadedImg} crackType={slot.crackType} analyzedData={slot.analyzedData}/>}
                   {slot.activeView === "blueprint" && <BlueprintView crackType={slot.crackType} m={slotM} width={380} height={230}/>}
                   {slot.activeView === "model3d"   && <CrackModel3D crackType={slot.crackType} width={380} height={230}/>}
                 </div>
@@ -1495,10 +1470,10 @@ export default function CortexCrackAnalyzer({ authToken, getApiUrl, onDefectSave
               </div>
             );
           })}
+          </div>{/* end slot cards row */}
           
-          {/* Active Slot Control Section (spans 3 columns below the viewports) */}
+          {/* Active Slot Control Section */}
           <div style={{
-            gridColumn: "span 3",
             background: C.card,
             border: `1px solid ${C.border}`,
             borderRadius: 12,
@@ -1527,6 +1502,172 @@ export default function CortexCrackAnalyzer({ authToken, getApiUrl, onDefectSave
                 </span>
               </div>
             </div>
+
+            {/* Capture geometry + measurement engine */}
+            <div style={{
+              display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end",
+              padding: "10px 12px", background: C.surface,
+              border: `1px solid ${C.border}`, borderRadius: 8,
+            }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: C.textSub, fontFamily: C.mono, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                  Image Length (m)
+                </label>
+                <input
+                  type="number" min="0" step="0.1" value={realWidthM}
+                  onChange={(e) => setRealWidthM(e.target.value)}
+                  style={{ width: 90, padding: "6px 8px", background: C.bg, border: `1px solid ${C.border}`,
+                    borderRadius: 6, color: C.text, fontFamily: C.mono, fontSize: 13 }}
+                />
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: C.textSub, fontFamily: C.mono, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                  Image Breadth (m)
+                </label>
+                <input
+                  type="number" min="0" step="0.1" value={realHeightM}
+                  onChange={(e) => setRealHeightM(e.target.value)}
+                  style={{ width: 90, padding: "6px 8px", background: C.bg, border: `1px solid ${C.border}`,
+                    borderRadius: 6, color: C.text, fontFamily: C.mono, fontSize: 13 }}
+                />
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, marginLeft: "auto" }}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: C.textSub, fontFamily: C.mono, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                  Measurement Method
+                </label>
+                <div style={{ display: "flex", border: `1px solid ${C.border}`, borderRadius: 6, overflow: "hidden" }}>
+                  {[
+                    { id: "trigonometry", label: "📐 Geometry" },
+                    { id: "cv", label: "🧠 CV (AI)" },
+                  ].map(opt => (
+                    <button
+                      key={opt.id}
+                      onClick={() => setMeasurementMethod(opt.id)}
+                      title={
+                        opt.id === "trigonometry"
+                          ? "Straight principal-axis length + trigonometric GSD scaling"
+                          : "Tiled segmentation + skeleton geodesic length (uses the YOLO model when available, else classical CV)"}
+                      style={{
+                        padding: "6px 14px", border: "none", fontSize: 12, fontWeight: 700, fontFamily: C.mono,
+                        background: measurementMethod === opt.id ? C.accent : C.bg,
+                        color: measurementMethod === opt.id ? "#000" : C.textSub,
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Method comparison: geometry vs computer-vision */}
+            {analyzedData && !analyzedData.error && analyzedData.method_comparison && (
+              <div style={{
+                padding: "10px 12px", background: C.surface,
+                border: `1px solid ${C.border}`, borderRadius: 8, fontFamily: C.mono,
+              }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: C.textSub, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>
+                  Length Method Comparison
+                </div>
+                <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center" }}>
+                  <div>
+                    <div style={{ fontSize: 9, color: C.textSub }}>📐 GEOMETRY</div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>
+                      {analyzedData.method_comparison.geometry.length_cm} cm
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 9, color: C.textSub }}>
+                      🧠 CV{analyzedData.method_comparison.cv.yolo_used ? " (YOLO)" : ""}
+                    </div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: C.accent }}>
+                      {analyzedData.method_comparison.cv.length_cm} cm
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 9, color: C.textSub }}>Δ LENGTH</div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>
+                      {analyzedData.method_comparison.length_delta_cm} cm
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 9, color: C.textSub }}>AGREEMENT</div>
+                    <div style={{ fontSize: 15, fontWeight: 700,
+                      color: analyzedData.method_comparison.length_agreement_pct >= 90 ? "#22c55e"
+                            : analyzedData.method_comparison.length_agreement_pct >= 75 ? C.accent : "#ef4444" }}>
+                      {analyzedData.method_comparison.length_agreement_pct}%
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 9, color: C.textSub }}>TORTUOSITY</div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>
+                      {analyzedData.method_comparison.cv.tortuosity}×
+                    </div>
+                  </div>
+                </div>
+                <div style={{ fontSize: 10, color: C.textSub, marginTop: 8, fontFamily: C.body }}>
+                  Geometry = straight extent · CV = skeleton geodesic length following curvature
+                  {analyzedData.cv_detail ? ` · engine: ${analyzedData.cv_detail.skeleton_engine}` : ""}
+                </div>
+
+                {/* Per-crack comparison table */}
+                {Array.isArray(analyzedData.method_comparison.per_crack)
+                  && analyzedData.method_comparison.per_crack.length > 0 && (
+                  <div style={{ marginTop: 10, overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, fontFamily: C.mono }}>
+                      <thead>
+                        <tr style={{ color: C.textSub, textAlign: "right" }}>
+                          <th style={{ textAlign: "left", padding: "4px 6px", borderBottom: `1px solid ${C.border}` }}>#</th>
+                          <th style={{ padding: "4px 6px", borderBottom: `1px solid ${C.border}` }}>📐 Geo (cm)</th>
+                          <th style={{ padding: "4px 6px", borderBottom: `1px solid ${C.border}` }}>🧠 CV (cm)</th>
+                          <th style={{ padding: "4px 6px", borderBottom: `1px solid ${C.border}` }}>Δ (cm)</th>
+                          <th style={{ padding: "4px 6px", borderBottom: `1px solid ${C.border}` }}>Agree</th>
+                          <th style={{ padding: "4px 6px", borderBottom: `1px solid ${C.border}` }}>Angle</th>
+                          <th style={{ padding: "4px 6px", borderBottom: `1px solid ${C.border}` }}>Tort.</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {analyzedData.method_comparison.per_crack.map((row, i) => (
+                          <tr key={i} style={{ textAlign: "right", color: C.text }}>
+                            <td style={{ textAlign: "left", padding: "4px 6px", borderBottom: `1px solid ${C.border}` }}>
+                              Crack {i + 1}{row.matched ? "" : " ★"}
+                            </td>
+                            <td style={{ padding: "4px 6px", borderBottom: `1px solid ${C.border}` }}>
+                              {row.geometry_length_cm != null ? row.geometry_length_cm : "—"}
+                            </td>
+                            <td style={{ padding: "4px 6px", borderBottom: `1px solid ${C.border}`, color: C.accent }}>
+                              {row.cv_length_cm != null ? row.cv_length_cm : "—"}
+                            </td>
+                            <td style={{ padding: "4px 6px", borderBottom: `1px solid ${C.border}` }}>
+                              {row.delta_cm != null ? row.delta_cm : "—"}
+                            </td>
+                            <td style={{
+                              padding: "4px 6px", borderBottom: `1px solid ${C.border}`,
+                              color: row.agreement_pct == null ? C.textSub
+                                    : row.agreement_pct >= 90 ? "#22c55e"
+                                    : row.agreement_pct >= 75 ? C.accent : "#ef4444",
+                            }}>
+                              {row.agreement_pct != null ? `${row.agreement_pct}%` : "—"}
+                            </td>
+                            <td style={{ padding: "4px 6px", borderBottom: `1px solid ${C.border}` }}>
+                              {row.angle_deg != null ? `${row.angle_deg}°` : "—"}
+                            </td>
+                            <td style={{ padding: "4px 6px", borderBottom: `1px solid ${C.border}` }}>
+                              {row.tortuosity != null ? `${row.tortuosity}×` : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <div style={{ fontSize: 9.5, color: C.textSub, marginTop: 6, fontFamily: C.body, lineHeight: 1.5 }}>
+                      <strong style={{ color: C.text }}>★ (star)</strong> = this crack was detected by only <strong>one</strong> method
+                      (Geometry or CV) and has no matching crack in the other method, so Δ and Agreement can't be computed.
+                      Rows without a star were matched by both methods.
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Upload + Clear Row */}
             <div style={{ display: "flex", gap: 10 }}>
@@ -1580,7 +1721,7 @@ export default function CortexCrackAnalyzer({ authToken, getApiUrl, onDefectSave
               <button
                 onClick={() => fileRef.current?.click()}
                 style={{
-                  flex: 2,
+                  flex: 1.3,
                   padding: "11px",
                   background: C.accent,
                   border: "none",
@@ -1598,14 +1739,39 @@ export default function CortexCrackAnalyzer({ authToken, getApiUrl, onDefectSave
                 onMouseOver={(e) => e.currentTarget.style.filter = "brightness(0.95)"}
                 onMouseOut={(e) => e.currentTarget.style.filter = "none"}
               >
-                🖼 Upload UAV Image to Slot {activeSlotIdx + 1}
+                🖼 {activeSlot.pendingFile || activeSlot.uploadedImg ? "Change Image" : `Upload Image to Slot ${activeSlotIdx + 1}`}
+              </button>
+
+              <button
+                onClick={runAnalysis}
+                disabled={!activeSlot.pendingFile || analyzing}
+                style={{
+                  flex: 1.6,
+                  padding: "11px",
+                  background: (activeSlot.pendingFile && !analyzing) ? "#22c55e" : C.surface,
+                  border: `1px solid ${activeSlot.pendingFile ? "#22c55e" : C.border}`,
+                  borderRadius: 8,
+                  color: (activeSlot.pendingFile && !analyzing) ? "#04130a" : C.textSub,
+                  fontSize: 14,
+                  fontWeight: 800,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 6,
+                  cursor: (activeSlot.pendingFile && !analyzing) ? "pointer" : "not-allowed",
+                  transition: "all 0.2s",
+                }}
+                onMouseOver={(e) => { if (activeSlot.pendingFile && !analyzing) e.currentTarget.style.filter = "brightness(1.08)"; }}
+                onMouseOut={(e) => e.currentTarget.style.filter = "none"}
+              >
+                {analyzing ? "⏳ Analyzing…" : "🔬 Analyze"}
               </button>
             </div>
 
             {/* Quick Scenario Select for active slot */}
             <div>
               <div style={{ fontSize: 11, color: C.textSub, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8, fontWeight: 600 }}>
-                Quick Select Scenario (Updates Active Slot)
+                Demo Crack Library — illustrative preset values (not measured from an image). Upload + Analyze for real measurements.
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 8 }}>
                 {SCENARIOS.map(s => {
@@ -1679,7 +1845,7 @@ export default function CortexCrackAnalyzer({ authToken, getApiUrl, onDefectSave
           <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden", boxShadow: "0 4px 6px -1px rgba(0, 0, 0, 0.05)" }}>
             <div style={{ padding: "10px 12px", borderBottom: `1px solid ${C.border}`, background: C.surface, color: "#FFFFFF" }}>
               <span style={{ fontSize: 11, fontWeight: 700, color: C.accent, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-                3-Slot Comparison Matrix
+                2-Slot Comparison
               </span>
             </div>
             <div style={{ overflowX: "auto" }}>
@@ -1687,7 +1853,7 @@ export default function CortexCrackAnalyzer({ authToken, getApiUrl, onDefectSave
                 <thead>
                   <tr style={{ borderBottom: `1px solid ${C.border}`, background: C.surface }}>
                     <th style={{ padding: "8px 12px", color: C.textSub, fontWeight: 600 }}>Parameter</th>
-                    {[0, 1, 2].map((idx) => {
+                    {[0, 1].map((idx) => {
                       const isActive = idx === activeSlotIdx;
                       return (
                         <th
@@ -1761,7 +1927,7 @@ export default function CortexCrackAnalyzer({ authToken, getApiUrl, onDefectSave
                   ].map((row, rIdx) => (
                     <tr key={rIdx} style={{ borderBottom: `1px solid ${C.border}` }}>
                       <td style={{ padding: "8px 12px", color: C.textSub, fontWeight: 600 }}>{row.label}</td>
-                      {[0, 1, 2].map((idx) => {
+                      {[0, 1].map((idx) => {
                         const slot = slots[idx];
                         const isActive = idx === activeSlotIdx;
                         return (
@@ -1801,7 +1967,20 @@ export default function CortexCrackAnalyzer({ authToken, getApiUrl, onDefectSave
                   crack_type: slot.analyzedData.crack_type || "Structural Crack",
                   severity: slot.analyzedData.severity || "severe",
                   v_index: slot.analyzedData.v_index || 0.68,
-                  recommendation: slot.analyzedData.recommendation || "Expose bars and clean."
+                  recommendation: slot.analyzedData.recommendation || "Expose bars and clean.",
+                  measurement_method: slot.analyzedData.measurement_method,
+                  orientation_angle: slot.analyzedData.orientation_angle,
+                  crack_count: slot.analyzedData.crack_count,
+                  gsd_cm_per_px_x: slot.analyzedData.gsd_cm_per_px_x,
+                  gsd_cm_per_px_y: slot.analyzedData.gsd_cm_per_px_y,
+                  resolution_w: slot.analyzedData.resolution_w,
+                  resolution_h: slot.analyzedData.resolution_h,
+                  primary_length_px: slot.analyzedData.cracks && slot.analyzedData.cracks[0] ? slot.analyzedData.cracks[0].length_px : null,
+                  real_image_width_m: slot.analyzedData.real_image_width_m,
+                  real_image_height_m: slot.analyzedData.real_image_height_m,
+                  analysis_confidence: slot.analyzedData.analysis_confidence,
+                  member_type: slot.analyzedData.member_type,
+                  method_comparison: slot.analyzedData.method_comparison,
                 } : {
                   filename: `scenario_slot_${i+1}.png`,
                   width_mm: parseFloat(slotM.width),
@@ -1849,7 +2028,7 @@ export default function CortexCrackAnalyzer({ authToken, getApiUrl, onDefectSave
             onMouseOver={(e) => e.currentTarget.style.filter = "brightness(0.95)"}
             onMouseOut={(e) => e.currentTarget.style.filter = "none"}
           >
-            📚 Compile &amp; Export 3-Slot Report PDF
+            📚 Compile &amp; Export 2-Slot Report PDF
           </button>
 
           {/* Active Slot details */}
@@ -1953,7 +2132,21 @@ export default function CortexCrackAnalyzer({ authToken, getApiUrl, onDefectSave
                   crack_type: analyzedData.crack_type || "Structural Crack",
                   severity: analyzedData.severity || "severe",
                   v_index: analyzedData.v_index || 0.68,
-                  recommendation: analyzedData.recommendation || "Expose bars and clean."
+                  recommendation: analyzedData.recommendation || "Expose bars and clean.",
+                  // Engineering detail for the report
+                  measurement_method: analyzedData.measurement_method,
+                  orientation_angle: analyzedData.orientation_angle,
+                  crack_count: analyzedData.crack_count,
+                  gsd_cm_per_px_x: analyzedData.gsd_cm_per_px_x,
+                  gsd_cm_per_px_y: analyzedData.gsd_cm_per_px_y,
+                  resolution_w: analyzedData.resolution_w,
+                  resolution_h: analyzedData.resolution_h,
+                  primary_length_px: analyzedData.cracks && analyzedData.cracks[0] ? analyzedData.cracks[0].length_px : null,
+                  real_image_width_m: analyzedData.real_image_width_m,
+                  real_image_height_m: analyzedData.real_image_height_m,
+                  analysis_confidence: analyzedData.analysis_confidence,
+                  member_type: analyzedData.member_type,
+                  method_comparison: analyzedData.method_comparison,
                 } : {
                   filename: `scenario_slot_${activeSlotIdx+1}.png`,
                   width_mm: parseFloat(m.width),

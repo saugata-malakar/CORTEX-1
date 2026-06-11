@@ -22,9 +22,30 @@ from src.utils.s3_store import S3Store
 
 logger = logging.getLogger(__name__)
 
-DB_DIR = Path(__file__).parents[2] / "data" / "reports"
+# Data root is configurable so the SQLite DB / artifacts can live on a
+# persistent disk (e.g. a Render disk) instead of the ephemeral container FS.
+DATA_ROOT = Path(os.getenv("CORTEX_DATA_DIR", str(Path(__file__).parents[2] / "data")))
+DB_DIR = DATA_ROOT / "reports"
 DB_DIR.mkdir(parents=True, exist_ok=True)
 SQLITE_DB_PATH = DB_DIR / "defects.db"
+
+
+def _normalize_pg_dsn(url: str) -> str:
+    """Normalize a PostgreSQL DSN to the SQLAlchemy asyncpg dialect.
+
+    Accepts the common forms emitted by hosting providers
+    (``postgres://`` / ``postgresql://``) and rewrites them to
+    ``postgresql+asyncpg://``. Strips libpq-only query params such as
+    ``sslmode`` that the asyncpg driver does not understand.
+    """
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):
+        url = "postgresql+asyncpg://" + url[len("postgresql://"):]
+    # Drop libpq-style query string (e.g. ?sslmode=require) — asyncpg rejects it.
+    if "+asyncpg" in url and "?" in url:
+        url = url.split("?", 1)[0]
+    return url
 
 # [RC-08] Retry constants for database locked errors
 MAX_RETRIES = 5
@@ -161,34 +182,42 @@ class DefectStore:
 
     def __init__(self, dsn: Optional[str] = None) -> None:
         self.s3_store = S3Store()
-        
-        # Determine database endpoints
-        raw_pg_dsn = dsn or os.getenv("CORTEX_DB_URL", "postgresql+asyncpg://cortex_user:cortex_password@localhost:5432/cortex_db")
-        if raw_pg_dsn.startswith("postgres://"):
-            pg_dsn = raw_pg_dsn.replace("postgres://", "postgresql+asyncpg://", 1)
-        elif raw_pg_dsn.startswith("postgresql://") and "+asyncpg" not in raw_pg_dsn:
-            pg_dsn = raw_pg_dsn.replace("postgresql://", "postgresql+asyncpg://", 1)
-        else:
-            pg_dsn = raw_pg_dsn
+
+        # An external relational database is used only when explicitly configured.
+        # Otherwise we go straight to SQLite — no blocking probe of localhost:5432
+        # on every boot (which previously added ~2s latency and noisy error logs
+        # on hosts where Postgres is intentionally absent).
+        explicit_dsn = dsn or os.getenv("CORTEX_DB_URL") or os.getenv("DATABASE_URL")
         sqlite_dsn = f"sqlite+aiosqlite:///{SQLITE_DB_PATH.as_posix()}"
-        
+
         self.is_postgres = False
-        try:
-            temp_engine = create_async_engine(pg_dsn, connect_args={"timeout": 2} if "postgresql" in pg_dsn else {})
-            run_sync(self._test_connection(temp_engine))
-            # Create production-hardened engine with connection pool parameters
-            self.engine = create_async_engine(
-                pg_dsn,
-                pool_size=20,
-                max_overflow=10,
-                pool_recycle=1800,
-                pool_pre_ping=True,
-                connect_args={"timeout": 5} if "postgresql" in pg_dsn else {}
-            )
-            self.is_postgres = True
-            logger.info("Connected successfully to PostgreSQL database engine with connection pooling.")
-        except Exception as e:
-            logger.warning("PostgreSQL database connection failed: %s. Falling back to local SQLite.", e)
+
+        if explicit_dsn:
+            pg_dsn = _normalize_pg_dsn(explicit_dsn)
+            try:
+                temp_engine = create_async_engine(pg_dsn, connect_args={"timeout": 5})
+                run_sync(self._test_connection(temp_engine))
+                # Production-hardened engine with connection pooling.
+                self.engine = create_async_engine(
+                    pg_dsn,
+                    pool_size=20,
+                    max_overflow=10,
+                    pool_recycle=1800,
+                    pool_pre_ping=True,
+                    connect_args={"timeout": 5},
+                )
+                self.is_postgres = True
+                logger.info("Connected to PostgreSQL with connection pooling.")
+            except Exception as e:
+                logger.warning(
+                    "Configured PostgreSQL is unreachable (%s). Falling back to local SQLite at %s.",
+                    e, SQLITE_DB_PATH,
+                )
+                self.engine = create_async_engine(sqlite_dsn)
+                self.is_postgres = False
+        else:
+            logger.info("No external database configured (CORTEX_DB_URL/DATABASE_URL unset). "
+                        "Using local SQLite store at %s.", SQLITE_DB_PATH)
             self.engine = create_async_engine(sqlite_dsn)
             self.is_postgres = False
 
@@ -214,76 +243,6 @@ class DefectStore:
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         
-        # Auto-seed PostgreSQL from local SQLite backup if PostgreSQL is empty
-        if self.is_postgres:
-            try:
-                async with self.session_factory() as session:
-                    repo = InspectionRepository(session)
-                    inspections = await repo.get_all()
-                    if not inspections:
-                        logger.info("PostgreSQL database is empty. Checking if local SQLite backup exists to seed...")
-                        if SQLITE_DB_PATH.exists():
-                            logger.info("Found local SQLite backup at %s. Seeding PostgreSQL...", SQLITE_DB_PATH)
-                            sqlite_engine = create_async_engine(f"sqlite+aiosqlite:///{SQLITE_DB_PATH.as_posix()}")
-                            sqlite_session_factory = async_sessionmaker(bind=sqlite_engine, expire_on_commit=False)
-                            async with sqlite_session_factory() as sqlite_session:
-                                sqlite_repo = InspectionRepository(sqlite_session)
-                                sqlite_inspections = await sqlite_repo.get_all()
-                                for item in sqlite_inspections:
-                                    new_ins = ORMInspection(
-                                        id=item.id,
-                                        building_id=item.building_id,
-                                        building_name=item.building_name,
-                                        inspection_date=item.inspection_date,
-                                        vi_score=item.vi_score,
-                                        vi_class=item.vi_class,
-                                        pipeline_version=item.pipeline_version,
-                                        run_timestamp=item.run_timestamp,
-                                        warnings=item.warnings,
-                                        s3_key=item.s3_key,
-                                        geojson_s3_key=item.geojson_s3_key,
-                                        row_version=item.row_version
-                                    )
-                                    session.add(new_ins)
-                                    
-                                    defects = await sqlite_repo.get_defects(item.id)
-                                    for d in defects:
-                                        new_d = ORMDefect(
-                                            defect_id=d.defect_id,
-                                            inspection_id=d.inspection_id,
-                                            type=d.type,
-                                            length_cm=d.length_cm,
-                                            width_mm=d.width_mm,
-                                            area_cm2=d.area_cm2,
-                                            centroid_x=d.centroid_x,
-                                            centroid_y=d.centroid_y,
-                                            severity_class=d.severity_class,
-                                            confidence_score=d.confidence_score,
-                                            is_false_positive=d.is_false_positive,
-                                            fp_confidence=d.fp_confidence,
-                                            temporal_status=d.temporal_status,
-                                            parent_defect_id=d.parent_defect_id,
-                                            delta_width_mm=d.delta_width_mm,
-                                            growth_rate_mm_per_month=d.growth_rate_mm_per_month,
-                                            growth_acceleration=d.growth_acceleration,
-                                            visible_bar_diameter_mm=d.visible_bar_diameter_mm,
-                                            estimated_cover_loss_mm=d.estimated_cover_loss_mm,
-                                            capacity_reduction_pct=d.capacity_reduction_pct,
-                                            orientation_angle=d.orientation_angle,
-                                            propagation_rate=d.propagation_rate,
-                                            delamination_area_m2=d.delamination_area_m2,
-                                            grid_reference=d.grid_reference,
-                                            member_type=d.member_type,
-                                            recommended_intervention=d.recommended_intervention,
-                                            reinspection_date=d.reinspection_date
-                                        )
-                                        session.add(new_d)
-                                await session.commit()
-                                logger.info("Successfully seeded PostgreSQL database with local SQLite data.")
-                            await sqlite_engine.dispose()
-            except Exception as seed_err:
-                logger.warning("Failed to seed PostgreSQL database from local SQLite backup: %s", seed_err)
-
         # SQLite schema migration for civil engineering diagnostic columns
         if not self.is_postgres:
             import sqlite3

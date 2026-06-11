@@ -19,7 +19,9 @@ def add_pipeline_context(logger: Any, method_name: str, event_dict: Dict[str, An
 
 def configure_logger(log_level: int = logging.INFO) -> None:
     """Configures the global structlog system and standard logging wrappers."""
-    # 1. Setup structlog processors chain
+    # 1. structlog processor chain. The final `wrap_for_formatter` hands the
+    #    event dict off to the stdlib ProcessorFormatter for a SINGLE JSON
+    #    render — rendering JSON here as well would double-encode every line.
     processors = [
         structlog.stdlib.filter_by_level,
         structlog.stdlib.add_logger_name,
@@ -30,7 +32,7 @@ def configure_logger(log_level: int = logging.INFO) -> None:
         structlog.processors.format_exc_info,
         structlog.processors.UnicodeDecoder(),
         add_pipeline_context,
-        structlog.processors.JSONRenderer()
+        structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
     ]
 
     structlog.configure(
@@ -41,11 +43,13 @@ def configure_logger(log_level: int = logging.INFO) -> None:
         cache_logger_on_first_use=True,
     )
 
-    # 2. Redirect standard python logging to structlog
+    # 2. Single JSON render happens here, for both structlog and stdlib logging.
     formatter = structlog.stdlib.ProcessorFormatter(
         foreign_pre_chain=[
             structlog.stdlib.add_log_level,
             structlog.stdlib.add_logger_name,
+            structlog.processors.TimeStamper(fmt="iso", utc=True),
+            add_pipeline_context,
         ],
         processor=structlog.processors.JSONRenderer(),
     )

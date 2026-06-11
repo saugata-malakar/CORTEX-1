@@ -123,7 +123,9 @@ def generate_blueprint_image(data: Dict[str, Any]) -> Image:
     ax.grid(True, color='#1A365D', linestyle='--', linewidth=0.8)
     
     member_type = data.get("member_type", "slab").lower()
-    rebar_spacing = data.get("rebar_spacing_cm", 20.0)
+    rebar_spacing = data.get("rebar_spacing_cm") or 20.0
+    if rebar_spacing <= 0:
+        rebar_spacing = 20.0
     crack_width = data.get("width_mm", 0.5)
     crack_len = data.get("length_cm", 15.0)
     angle = data.get("orientation_angle", 45.0)
@@ -210,7 +212,9 @@ def generate_3d_wireframe_image(data: Dict[str, Any]) -> Image:
     ax.set_facecolor('#121214')
     
     member_type = data.get("member_type", "slab").lower()
-    rebar_spacing = data.get("rebar_spacing_cm", 20.0)
+    rebar_spacing = data.get("rebar_spacing_cm") or 20.0
+    if rebar_spacing <= 0:
+        rebar_spacing = 20.0
     crack_width = data.get("width_mm", 0.5)
     crack_len = data.get("length_cm", 15.0)
     angle = data.get("orientation_angle", 45.0)
@@ -1654,6 +1658,121 @@ class PDFReportGenerator:
         return str(out_p)
 
 
+def _render_calc_breakdown(story, data, sec_heading, body_style, val_style, text_dark, colors):
+    """Append the step-by-step calculation breakdown (with substituted numbers)."""
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import Paragraph, Spacer
+
+    story.append(Paragraph("2b. Detailed Calculation Breakdown", sec_heading))
+    rw, rh = data.get("real_image_width_m"), data.get("real_image_height_m")
+    res_w, res_h = data.get("resolution_w"), data.get("resolution_h")
+    gx, gy = data.get("gsd_cm_per_px_x"), data.get("gsd_cm_per_px_y")
+    len_px = data.get("primary_length_px")
+    len_cm = data.get("length_cm", 0.0)
+    w_mm = data.get("width_mm", 0.0)
+    ang = data.get("orientation_angle", 0.0)
+    vi = data.get("v_index", 0.0)
+    method = (data.get("measurement_method") or "trigonometry").upper()
+    gavg = (gx + gy) / 2.0 if (gx is not None and gy is not None) else None
+
+    calc = ParagraphStyle(name="CalcStep", parent=body_style, fontName="Helvetica",
+                          fontSize=8.5, leading=12.5, textColor=text_dark, spaceAfter=2)
+    frm = ParagraphStyle(name="CalcFormula", parent=body_style, fontName="Courier",
+                         fontSize=8.5, leading=12.5, textColor=colors.HexColor("#1B365D"), spaceAfter=5)
+
+    story.append(Paragraph("<b>Step 1 - Ground Sampling Distance (GSD)</b>", calc))
+    if rw and res_w:
+        story.append(Paragraph(f"GSDx = (length x 100) / width(px) = ({rw} m x 100) / {res_w} px = <b>{gx:.4f} cm/px</b>", frm))
+    if rh and res_h:
+        story.append(Paragraph(f"GSDy = (breadth x 100) / height(px) = ({rh} m x 100) / {res_h} px = <b>{gy:.4f} cm/px</b>", frm))
+    if gavg is not None:
+        story.append(Paragraph(f"Mean GSD = (GSDx + GSDy) / 2 = <b>{gavg:.4f} cm/px</b>", frm))
+    else:
+        story.append(Paragraph("Real-world dimensions not supplied - nominal 0.15 cm/px assumed.", calc))
+
+    story.append(Paragraph("<b>Step 2 - Crack Length</b>", calc))
+    if method == "CV":
+        if len_px and gavg:
+            story.append(Paragraph(f"CV geodesic skeleton length = {len_px:.0f} px x {gavg:.4f} = <b>{len_cm:.1f} cm</b>", frm))
+        else:
+            story.append(Paragraph(f"Measured curved (skeleton) length = <b>{len_cm:.1f} cm</b>", frm))
+    else:
+        if len_px and gavg:
+            story.append(Paragraph(f"Geometry: L = sqrt((dx.GSDx)^2 + (dy.GSDy)^2); axis = {len_px:.0f} px -> <b>{len_cm:.1f} cm</b>", frm))
+        else:
+            story.append(Paragraph(f"Straight-line crack length = <b>{len_cm:.1f} cm</b>", frm))
+
+    story.append(Paragraph("<b>Step 3 - Crack Width</b>", calc))
+    if gavg:
+        w_px = w_mm / (gavg * 10.0) if gavg else 0.0
+        story.append(Paragraph(f"Width = width(px) x GSD x 10 = {w_px:.1f} px x {gavg:.4f} x 10 = <b>{w_mm:.2f} mm</b>", frm))
+    else:
+        story.append(Paragraph(f"Measured crack width = <b>{w_mm:.2f} mm</b>", frm))
+
+    story.append(Paragraph("<b>Step 4 - Orientation Angle</b>", calc))
+    band = 'near-vertical' if ang >= 70 else 'near-horizontal' if ang <= 20 else 'diagonal'
+    story.append(Paragraph(f"theta = atan2(dy, dx) from horizontal = <b>{ang:.1f} deg</b> ({band}).", frm))
+
+    story.append(Paragraph("<b>Step 5 - Vulnerability Index (V-Index)</b>", calc))
+    story.append(Paragraph(f"V = type-weight x severity-multiplier (normalised 0-1) = <b>{vi:.2f}</b> "
+                           f"- classified <b>{data.get('severity','minor').upper()}</b>.", frm))
+    story.append(Paragraph(f"<i>Headline method: {method}. Detection confidence: {data.get('analysis_confidence', 0)}.</i>", calc))
+    story.append(Spacer(1, 8))
+
+
+def _render_method_comparison(story, data, sec_heading, body_style, val_style, text_dark, colors):
+    """Append the geometry-vs-CV per-crack comparison table + star legend."""
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+
+    mc = data.get("method_comparison") or {}
+    if not mc:
+        return
+    per_crack = mc.get("per_crack") or []
+    story.append(Paragraph("2c. Geometry vs Computer-Vision Crack Comparison", sec_heading))
+    geo, cv = mc.get("geometry", {}), mc.get("cv", {})
+    story.append(Paragraph(
+        f"<b>Geometry</b> straight extent = {geo.get('length_cm', 0)} cm; "
+        f"<b>CV</b> curved skeleton = {cv.get('length_cm', 0)} cm. "
+        f"Agreement: <b>{mc.get('length_agreement_pct', 0)}%</b> (delta {mc.get('length_delta_cm', 0)} cm). "
+        f"CV engine: {cv.get('skeleton_engine', 'n/a')}, YOLO: {cv.get('yolo_used', False)}.", body_style))
+    story.append(Spacer(1, 4))
+
+    if per_crack:
+        hdr = ["Crack #", "Geo (cm)", "CV (cm)", "delta", "Agree", "Angle", "Tort."]
+        rows = [[Paragraph(f"<b>{h}</b>", val_style) for h in hdr]]
+        for i, r in enumerate(per_crack[:12]):
+            star = "" if r.get("matched") else " *"
+            rows.append([
+                Paragraph(f"Crack {i+1}{star}", val_style),
+                Paragraph("-" if r.get("geometry_length_cm") is None else f"{r['geometry_length_cm']}", val_style),
+                Paragraph("-" if r.get("cv_length_cm") is None else f"{r['cv_length_cm']}", val_style),
+                Paragraph("-" if r.get("delta_cm") is None else f"{r['delta_cm']}", val_style),
+                Paragraph("-" if r.get("agreement_pct") is None else f"{r['agreement_pct']}%", val_style),
+                Paragraph("-" if r.get("angle_deg") is None else f"{r['angle_deg']}", val_style),
+                Paragraph("-" if r.get("tortuosity") is None else f"{r['tortuosity']}x", val_style),
+            ])
+        t = Table(rows, colWidths=[78, 75, 75, 70, 70, 78, 77])
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1B365D")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+            ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#BDC3C7")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F4F6F8")]),
+        ]))
+        story.append(t)
+        story.append(Spacer(1, 3))
+        story.append(Paragraph(
+            "<b>* (star)</b> = crack detected by only ONE method (Geometry or CV), no match in the other, "
+            "so delta and Agreement are N/A. <b>Tortuosity</b> = curved length / straight length "
+            "(1.0 = straight, higher = more meandering).",
+            ParagraphStyle(name="StarNote", parent=body_style, fontSize=7.5, leading=10,
+                           textColor=colors.HexColor("#566573"))))
+    story.append(Spacer(1, 8))
+
+
 def generate_single_defect_pdf(data: Dict[str, Any]) -> bytes:
     """
     Generates a single-page professional structural diagnostic report for an analyzed defect image.
@@ -1824,6 +1943,98 @@ def generate_single_defect_pdf(data: Dict[str, Any]) -> bytes:
     story.append(measure_table)
     story.append(Spacer(1, 8))
 
+    # --- DETAILED CALCULATION BREAKDOWN (per image, with substituted numbers) ---
+    story.append(Paragraph("2b. Detailed Calculation Breakdown", sec_heading))
+
+    _rw_m = data.get("real_image_width_m")
+    _rh_m = data.get("real_image_height_m")
+    _res_w = data.get("resolution_w")
+    _res_h = data.get("resolution_h")
+    _gsd_x = data.get("gsd_cm_per_px_x")
+    _gsd_y = data.get("gsd_cm_per_px_y")
+    _len_px = data.get("primary_length_px")
+    _len_cm = data.get("length_cm", 0.0)
+    _w_mm = data.get("width_mm", 0.0)
+    _ang = data.get("orientation_angle", 0.0)
+    _vi = data.get("v_index", 0.0)
+    _method = (data.get("measurement_method") or "trigonometry").upper()
+    _gsd_avg = None
+    if _gsd_x is not None and _gsd_y is not None:
+        _gsd_avg = (_gsd_x + _gsd_y) / 2.0
+
+    calc_style = ParagraphStyle(
+        name="CalcStep", parent=body_style, fontName="Helvetica",
+        fontSize=8.5, leading=12.5, textColor=text_dark, spaceAfter=2,
+    )
+    formula_style = ParagraphStyle(
+        name="CalcFormula", parent=body_style, fontName="Courier",
+        fontSize=8.5, leading=12.5, textColor=colors.HexColor("#1B365D"), spaceAfter=5,
+    )
+
+    # Step 1 — GSD
+    story.append(Paragraph("<b>Step 1 — Ground Sampling Distance (GSD)</b>", calc_style))
+    if _rw_m and _res_w:
+        story.append(Paragraph(
+            f"GSD&#8339; = (image length &times; 100) / image width(px) = "
+            f"({_rw_m} m &times; 100) / {_res_w} px = <b>{_gsd_x:.4f} cm/px</b>", formula_style))
+    if _rh_m and _res_h:
+        story.append(Paragraph(
+            f"GSD&#7527; = (image breadth &times; 100) / image height(px) = "
+            f"({_rh_m} m &times; 100) / {_res_h} px = <b>{_gsd_y:.4f} cm/px</b>", formula_style))
+    if _gsd_avg is not None:
+        story.append(Paragraph(
+            f"Mean GSD = (GSD&#8339; + GSD&#7527;) / 2 = <b>{_gsd_avg:.4f} cm/px</b>", formula_style))
+    else:
+        story.append(Paragraph(
+            "Image real-world dimensions were not supplied — a nominal 0.15 cm/px was assumed.", calc_style))
+
+    # Step 2 — Length
+    story.append(Paragraph("<b>Step 2 — Crack Length</b>", calc_style))
+    if _method == "CV":
+        if _len_px and _gsd_avg:
+            story.append(Paragraph(
+                f"CV traces the crack skeleton; geodesic length = &Sigma;(segment&middot;GSD). "
+                f"Skeleton length = {_len_px:.0f} px &rarr; "
+                f"{_len_px:.0f} &times; {_gsd_avg:.4f} = <b>{_len_cm:.1f} cm</b>", formula_style))
+        else:
+            story.append(Paragraph(f"Measured curved (skeleton) length = <b>{_len_cm:.1f} cm</b>", formula_style))
+    else:
+        if _len_px and _gsd_avg:
+            story.append(Paragraph(
+                f"Geometry uses straight principal-axis extent with trigonometric GSD scaling: "
+                f"L = &radic;((&Delta;x&middot;GSD&#8339;)&sup2; + (&Delta;y&middot;GSD&#7527;)&sup2;). "
+                f"Axis length = {_len_px:.0f} px &rarr; <b>{_len_cm:.1f} cm</b>", formula_style))
+        else:
+            story.append(Paragraph(f"Straight-line crack length = <b>{_len_cm:.1f} cm</b>", formula_style))
+
+    # Step 3 — Width
+    story.append(Paragraph("<b>Step 3 — Crack Width</b>", calc_style))
+    if _gsd_avg:
+        _w_px = (_w_mm / (_gsd_avg * 10.0)) if _gsd_avg else 0.0
+        story.append(Paragraph(
+            f"Width = width(px) &times; GSD &times; 10 (cm&rarr;mm). "
+            f"Width &asymp; {_w_px:.1f} px &rarr; {_w_px:.1f} &times; {_gsd_avg:.4f} &times; 10 = "
+            f"<b>{_w_mm:.2f} mm</b>", formula_style))
+    else:
+        story.append(Paragraph(f"Measured crack width = <b>{_w_mm:.2f} mm</b>", formula_style))
+
+    # Step 4 — Orientation
+    story.append(Paragraph("<b>Step 4 — Orientation Angle</b>", calc_style))
+    story.append(Paragraph(
+        f"&theta; = atan2(&Delta;y, &Delta;x) measured from horizontal = <b>{_ang:.1f}&deg;</b> "
+        f"({'near-vertical' if _ang >= 70 else 'near-horizontal' if _ang <= 20 else 'diagonal'}).", formula_style))
+
+    # Step 5 — Vulnerability Index
+    story.append(Paragraph("<b>Step 5 — Vulnerability Index (V-Index)</b>", calc_style))
+    story.append(Paragraph(
+        f"V = type-weight &times; severity-multiplier (normalised 0&ndash;1) = <b>{_vi:.2f}</b> "
+        f"&mdash; classified <b>{data.get('severity','minor').upper()}</b>.", formula_style))
+
+    story.append(Paragraph(
+        f"<i>Measurement method used for the headline values: {_method}. "
+        f"Detection confidence: {data.get('analysis_confidence', 0)}.</i>", calc_style))
+    story.append(Spacer(1, 8))
+
     # --- REBAR DEGRADATION ANALYSIS ---
     if data.get("visible_bar_diameter_mm") is not None:
         story.append(Paragraph("3. Exposed Reinforcement & Cover Loss Diagnostics", sec_heading))
@@ -1861,6 +2072,61 @@ def generate_single_defect_pdf(data: Dict[str, Any]) -> bytes:
     ]))
     story.append(diag_table)
     story.append(Spacer(1, 8))
+
+    # --- GEOMETRY vs CV METHOD COMPARISON ---
+    mc = data.get("method_comparison") or {}
+    per_crack = mc.get("per_crack") or []
+    if mc:
+        story.append(Paragraph("3c. Geometry vs Computer-Vision Crack Comparison", sec_heading))
+        geo = mc.get("geometry", {})
+        cv = mc.get("cv", {})
+        summary_txt = (
+            f"Two independent measurement methods were run. <b>Geometry</b> reports the straight "
+            f"principal-axis extent ({geo.get('length_cm', 0)} cm); <b>Computer Vision</b> traces the "
+            f"crack's curved skeleton ({cv.get('length_cm', 0)} cm). "
+            f"Overall length agreement: <b>{mc.get('length_agreement_pct', 0)}%</b> "
+            f"(&Delta; {mc.get('length_delta_cm', 0)} cm). "
+            f"CV engine: {cv.get('skeleton_engine', 'n/a')}, YOLO used: {cv.get('yolo_used', False)}."
+        )
+        story.append(Paragraph(summary_txt, body_style))
+        story.append(Spacer(1, 4))
+
+        if per_crack:
+            hdr = ["Crack #", "Geo (cm)", "CV (cm)", "Δ (cm)", "Agree", "Angle", "Tort."]
+            rows = [[Paragraph(f"<b>{h}</b>", val_style) for h in hdr]]
+            for i, r in enumerate(per_crack[:12]):
+                star = "" if r.get("matched") else " *"
+                rows.append([
+                    Paragraph(f"Crack {i + 1}{star}", val_style),
+                    Paragraph("—" if r.get("geometry_length_cm") is None else f"{r['geometry_length_cm']}", val_style),
+                    Paragraph("—" if r.get("cv_length_cm") is None else f"{r['cv_length_cm']}", val_style),
+                    Paragraph("—" if r.get("delta_cm") is None else f"{r['delta_cm']}", val_style),
+                    Paragraph("—" if r.get("agreement_pct") is None else f"{r['agreement_pct']}%", val_style),
+                    Paragraph("—" if r.get("angle_deg") is None else f"{r['angle_deg']}&deg;", val_style),
+                    Paragraph("—" if r.get("tortuosity") is None else f"{r['tortuosity']}x", val_style),
+                ])
+            cmp_table = Table(rows, colWidths=[78, 75, 75, 70, 70, 78, 77])
+            cmp_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1B365D")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+                ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#BDC3C7")),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F4F6F8")]),
+            ]))
+            story.append(cmp_table)
+            story.append(Spacer(1, 3))
+            star_note = (
+                "<b>* (star)</b> marks a crack detected by only ONE method (Geometry or CV) with no "
+                "matching crack in the other, so &Delta; and Agreement are not applicable. Unstarred "
+                "rows were matched by both methods. <b>Tortuosity</b> = curved length / straight length "
+                "(1.0 = perfectly straight; higher = more meandering)."
+            )
+            story.append(Paragraph(star_note, ParagraphStyle(
+                name="StarNote", parent=body_style, fontSize=7.5, leading=10,
+                textColor=colors.HexColor("#566573"))))
+        story.append(Spacer(1, 8))
 
     # --- REMEDIAL ACTION SPECIFICATION ---
     story.append(Paragraph("4. Engineering Action & Remedial Specifications", sec_heading))
@@ -2140,6 +2406,12 @@ def generate_compiled_defects_pdf(data_list: list) -> bytes:
         ]))
         story.append(measure_table)
         story.append(Spacer(1, 6))
+
+        # 2b. Detailed calculation breakdown (per image, with substituted numbers)
+        _render_calc_breakdown(story, defect, sec_heading, body_style, val_style, text_dark, colors)
+
+        # 2c. Geometry vs CV per-crack comparison
+        _render_method_comparison(story, defect, sec_heading, body_style, val_style, text_dark, colors)
 
         # Drawings
         story.append(Paragraph("3. Member Structural Diagnostics (X-Ray & 3D)", sec_heading))

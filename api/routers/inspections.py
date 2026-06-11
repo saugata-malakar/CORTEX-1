@@ -463,11 +463,11 @@ def _presign_s3(s3_key: str, expires: int = 3600) -> str:
 
 
 # ─── POST /upload-images ──────────────────────────────────────────────────────
-from fastapi import UploadFile, File
+from fastapi import UploadFile, File, Form
 import cv2
 import numpy as np
 import os
-from typing import List
+from typing import List, Optional
 from src.civil_analysis import analyze_structural_image
 
 @router.post(
@@ -476,6 +476,9 @@ from src.civil_analysis import analyze_structural_image
 )
 async def upload_images(
     files: List[UploadFile] = File(...),
+    real_width_m: Optional[float] = Form(None),
+    real_height_m: Optional[float] = Form(None),
+    measurement_method: str = Form("trigonometry"),
 ):
     """
     Endpoint for uploading multiple drone facade images.
@@ -508,22 +511,29 @@ async def upload_images(
             lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
             mean_int = float(np.mean(gray))
             
-            # Threshold flags (matching metadata_parser.py defaults)
-            is_blurry = lap_var < 100.0
-            is_underexposed = mean_int < 30.0
+            # Threshold flags. Lenient blur gate (configurable) — see run_frontend.
+            _blur_thr = float(os.getenv("CORTEX_BLUR_THRESHOLD", "12.0"))
+            _exposure_thr = float(os.getenv("CORTEX_EXPOSURE_THRESHOLD", "25.0"))
+            is_blurry = lap_var < _blur_thr
+            is_underexposed = mean_int < _exposure_thr
             passed = not is_blurry and not is_underexposed
             
             warnings = []
             if is_blurry:
-                warnings.append(f"Image is blurry (Laplacian variance {lap_var:.1f} < 100.0). Reshoot suggested.")
+                warnings.append(f"Image is blurry (Laplacian variance {lap_var:.1f} < {_blur_thr}). Reshoot suggested.")
             if is_underexposed:
-                warnings.append(f"Image is underexposed (Mean intensity {mean_int:.1f} < 30.0). Reshoot suggested.")
+                warnings.append(f"Image is underexposed (Mean intensity {mean_int:.1f} < {_exposure_thr}). Reshoot suggested.")
                 
             # Perform civil analysis if passed
             analysis = None
             if passed:
                 try:
-                    analysis = analyze_structural_image(content, file.filename)
+                    analysis = analyze_structural_image(
+                        content, file.filename,
+                        real_width_m=real_width_m,
+                        real_height_m=real_height_m,
+                        measurement_method=measurement_method,
+                    )
                 except Exception as e:
                     warnings.append(f"Analysis error: {str(e)}")
             
